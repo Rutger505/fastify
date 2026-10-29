@@ -64,7 +64,11 @@ fn album_image(album: &metadata::Album) -> Option<String> {
 }
 
 fn artist_names(artists: &[metadata::Artist]) -> String {
-    artists.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
+    artists
+        .iter()
+        .map(|a| a.name())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn base62(gid: &[u8]) -> Option<String> {
@@ -72,12 +76,17 @@ fn base62(gid: &[u8]) -> Option<String> {
 }
 
 fn id_from_uri<'a>(uri: &'a str, kind: &str) -> Option<&'a str> {
-    let rest = uri.strip_prefix("spotify:")?.strip_prefix(kind)?.strip_prefix(':')?;
+    let rest = uri
+        .strip_prefix("spotify:")?
+        .strip_prefix(kind)?
+        .strip_prefix(':')?;
     (!rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())).then_some(rest)
 }
 
 fn parse_id(id: &str) -> Result<SpotifyId, CoreError> {
-    SpotifyId::from_base62(id).map_err(|_| CoreError::NotFound { msg: format!("invalid id {id}") })
+    SpotifyId::from_base62(id).map_err(|_| CoreError::NotFound {
+        msg: format!("invalid id {id}"),
+    })
 }
 
 /// Batched extended metadata; returns raw protobuf payloads keyed by entity uri.
@@ -117,13 +126,18 @@ async fn extended(
 }
 
 /// Track ids -> rows, in the given order. Unknown/unavailable tracks are dropped.
-pub async fn hydrate_tracks(session: &Session, ids: &[String]) -> Result<Vec<TrackInfo>, CoreError> {
+pub async fn hydrate_tracks(
+    session: &Session,
+    ids: &[String],
+) -> Result<Vec<TrackInfo>, CoreError> {
     let uris: Vec<String> = ids.iter().map(|id| format!("spotify:track:{id}")).collect();
     let data = extended(session, &uris, ExtensionKind::TRACK_V4).await?;
     let mut out = Vec::with_capacity(ids.len());
     for (id, uri) in ids.iter().zip(&uris) {
         let Some(bytes) = data.get(uri) else { continue };
-        let Ok(t) = metadata::Track::parse_from_bytes(bytes) else { continue };
+        let Ok(t) = metadata::Track::parse_from_bytes(bytes) else {
+            continue;
+        };
         out.push(TrackInfo {
             id: id.clone(),
             title: t.name().to_owned(),
@@ -155,7 +169,9 @@ async fn hydrate_albums(session: &Session, ids: &[String]) -> Result<Vec<AlbumIn
         .collect())
 }
 
-fn playlist_image(attrs: &librespot_protocol::playlist4_external::ListAttributes) -> Option<String> {
+fn playlist_image(
+    attrs: &librespot_protocol::playlist4_external::ListAttributes,
+) -> Option<String> {
     let sized = |name: &str| {
         attrs
             .picture_size
@@ -166,7 +182,13 @@ fn playlist_image(attrs: &librespot_protocol::playlist4_external::ListAttributes
     };
     sized("default")
         .or_else(|| sized("large"))
-        .or_else(|| attrs.picture_size.iter().map(|p| p.url().to_owned()).find(|u| !u.is_empty()))
+        .or_else(|| {
+            attrs
+                .picture_size
+                .iter()
+                .map(|p| p.url().to_owned())
+                .find(|u| !u.is_empty())
+        })
         .or_else(|| image_url(attrs.picture()))
 }
 
@@ -174,19 +196,26 @@ pub async fn rootlist(session: &Session) -> Result<Vec<PlaylistInfo>, CoreError>
     let mut out = Vec::new();
     let mut from = 0;
     loop {
-        let bytes = session.spclient().get_rootlist(from, Some(ROOTLIST_PAGE)).await?;
+        let bytes = session
+            .spclient()
+            .get_rootlist(from, Some(ROOTLIST_PAGE))
+            .await?;
         let list = SelectedListContent::parse_from_bytes(&bytes).map_err(CoreError::other)?;
         let contents = list.contents.get_or_default();
         let n = contents.items.len();
         for (i, item) in contents.items.iter().enumerate() {
             // Folders show up as spotify:start-group / end-group markers: flatten them.
-            let Some(id) = id_from_uri(item.uri(), "playlist") else { continue };
+            let Some(id) = id_from_uri(item.uri(), "playlist") else {
+                continue;
+            };
             let meta = contents.meta_items.get(i);
             let attrs = meta.and_then(|m| m.attributes.as_ref());
             out.push(PlaylistInfo {
                 id: id.to_owned(),
                 name: attrs.map(|a| a.name().to_owned()).unwrap_or_default(),
-                owner: meta.map(|m| m.owner_username().to_owned()).unwrap_or_default(),
+                owner: meta
+                    .map(|m| m.owner_username().to_owned())
+                    .unwrap_or_default(),
                 image_url: attrs.and_then(playlist_image),
                 length: meta.map(|m| m.length().max(0) as u32).unwrap_or(0),
             });
@@ -213,9 +242,14 @@ pub async fn playlist_tracks(session: &Session, id: &str) -> Result<Vec<TrackInf
 }
 
 pub async fn album_tracks(session: &Session, id: &str) -> Result<Vec<TrackInfo>, CoreError> {
-    let uri = format!("spotify:album:{}", parse_id(id)?.to_base62().map_err(CoreError::from)?);
+    let uri = format!(
+        "spotify:album:{}",
+        parse_id(id)?.to_base62().map_err(CoreError::from)?
+    );
     let data = extended(session, std::slice::from_ref(&uri), ExtensionKind::ALBUM_V4).await?;
-    let bytes = data.get(&uri).ok_or_else(|| CoreError::NotFound { msg: format!("album {id}") })?;
+    let bytes = data.get(&uri).ok_or_else(|| CoreError::NotFound {
+        msg: format!("album {id}"),
+    })?;
     let album = metadata::Album::parse_from_bytes(bytes).map_err(CoreError::other)?;
     let ids: Vec<String> = album
         .disc
@@ -239,7 +273,12 @@ async fn collection(session: &Session) -> Result<Vec<String>, CoreError> {
         headers.insert(header::ACCEPT, ct);
         let res = session
             .spclient()
-            .request(&Method::POST, "/collection/v2/paging", Some(headers), Some(&body))
+            .request(
+                &Method::POST,
+                "/collection/v2/paging",
+                Some(headers),
+                Some(&body),
+            )
             .await?;
         let (items, next) = decode_page_response(&res).map_err(CoreError::other)?;
         uris.extend(items);
@@ -254,7 +293,10 @@ async fn collection(session: &Session) -> Result<Vec<String>, CoreError> {
 
 pub async fn liked_tracks(session: &Session) -> Result<Vec<TrackInfo>, CoreError> {
     let ids: Vec<String> = match collection(session).await {
-        Ok(uris) => uris.iter().filter_map(|u| id_from_uri(u, "track").map(str::to_owned)).collect(),
+        Ok(uris) => uris
+            .iter()
+            .filter_map(|u| id_from_uri(u, "track").map(str::to_owned))
+            .collect(),
         Err(e) => {
             log::warn!("collection paging failed ({e}), falling back to context-resolve");
             let ctx = session
@@ -273,7 +315,10 @@ pub async fn liked_tracks(session: &Session) -> Result<Vec<TrackInfo>, CoreError
 
 pub async fn saved_albums(session: &Session) -> Result<Vec<AlbumInfo>, CoreError> {
     let uris = collection(session).await?;
-    let ids: Vec<String> = uris.iter().filter_map(|u| id_from_uri(u, "album").map(str::to_owned)).collect();
+    let ids: Vec<String> = uris
+        .iter()
+        .filter_map(|u| id_from_uri(u, "album").map(str::to_owned))
+        .collect();
     hydrate_albums(session, &ids).await
 }
 
@@ -287,12 +332,17 @@ pub async fn search_tracks(session: &Session, query: &str) -> Result<Vec<TrackIn
     if q.is_empty() {
         return Ok(Vec::new());
     }
-    let ctx = session.spclient().get_context(&format!("spotify:search:{q}")).await?;
+    let ctx = session
+        .spclient()
+        .get_context(&format!("spotify:search:{q}"))
+        .await?;
     let ids: Vec<String> = ctx
         .pages
         .iter()
         .flat_map(|p| p.tracks.iter())
-        .filter_map(|t| id_from_uri(t.uri().split('?').next().unwrap_or(""), "track").map(str::to_owned))
+        .filter_map(|t| {
+            id_from_uri(t.uri().split('?').next().unwrap_or(""), "track").map(str::to_owned)
+        })
         .take(50)
         .collect();
     log::info!("search '{query}': {} track ids", ids.len());

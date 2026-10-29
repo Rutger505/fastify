@@ -78,11 +78,15 @@ impl KeyStore {
 
     pub fn get(&self, track_id: &str) -> Option<KeyEntry> {
         let data = fs::read(self.path(track_id)?).ok()?;
-        serde_json::from_slice::<KeyEntry>(&data).ok().filter(KeyEntry::valid)
+        serde_json::from_slice::<KeyEntry>(&data)
+            .ok()
+            .filter(KeyEntry::valid)
     }
 
     pub fn put(&self, track_id: &str, entry: &KeyEntry) -> Result<(), CoreError> {
-        let path = self.path(track_id).ok_or_else(|| CoreError::other("bad track id"))?;
+        let path = self
+            .path(track_id)
+            .ok_or_else(|| CoreError::other("bad track id"))?;
         let tmp = path.with_extension("tmp");
         fs::write(&tmp, serde_json::to_vec(entry).map_err(CoreError::other)?)?;
         fs::rename(tmp, path)?;

@@ -24,7 +24,8 @@ async fn main() {
         eprintln!("usage: fastify-probe <data-dir> login|run|raw <path>");
         std::process::exit(2);
     };
-    let core = FastifyCore::new(dir.clone(), format!("{dir}/cache"), 512 * 1024 * 1024).expect("core");
+    let core =
+        FastifyCore::new(dir.clone(), format!("{dir}/cache"), 512 * 1024 * 1024).expect("core");
     match cmd.as_str() {
         "login" => login(core).await,
         "run" => run(core).await,
@@ -45,7 +46,10 @@ async fn login(core: Arc<FastifyCore>) {
         .build()
         .expect("oauth client");
     let token = client.get_access_token_async().await.expect("oauth");
-    let user = core.login(token.access_token).await.expect("librespot login");
+    let user = core
+        .login(token.access_token)
+        .await
+        .expect("librespot login");
     println!("LOGGED IN as {user}");
 }
 
@@ -63,30 +67,58 @@ async fn run(core: Arc<FastifyCore>) {
         }};
     }
     step!("session", core.clone().username(), |u: &String| u.clone());
-    let lists = step!("playlists", core.clone().playlists(), |p: &Vec<fastify_core::PlaylistInfo>| format!(
+    let lists = step!("playlists", core.clone().playlists(), |p: &Vec<
+        fastify_core::PlaylistInfo,
+    >| format!(
         "{} e.g. {:?}",
         p.len(),
-        p.iter().take(5).map(|x| (&x.name, x.length, x.image_url.is_some())).collect::<Vec<_>>()
+        p.iter()
+            .take(5)
+            .map(|x| (&x.name, x.length, x.image_url.is_some()))
+            .collect::<Vec<_>>()
     ));
     if let Some(pl) = lists.and_then(|l| l.into_iter().find(|p| p.length > 0)) {
-        step!(format!("playlist '{}'", pl.name), core.clone().playlist_tracks(pl.id.clone()), tracks);
+        step!(
+            format!("playlist '{}'", pl.name),
+            core.clone().playlist_tracks(pl.id.clone()),
+            tracks
+        );
     }
     step!("liked", core.clone().liked_tracks(), tracks);
-    let albums = step!("albums", core.clone().saved_albums(), |a: &Vec<fastify_core::AlbumInfo>| format!(
+    let albums = step!("albums", core.clone().saved_albums(), |a: &Vec<
+        fastify_core::AlbumInfo,
+    >| format!(
         "{} e.g. {:?}",
         a.len(),
         a.iter().take(3).map(|x| &x.name).collect::<Vec<_>>()
     ));
     if let Some(al) = albums.and_then(|a| a.into_iter().next()) {
-        step!(format!("album '{}'", al.name), core.clone().album_tracks(al.id.clone()), tracks);
+        step!(
+            format!("album '{}'", al.name),
+            core.clone().album_tracks(al.id.clone()),
+            tracks
+        );
     }
-    step!("search", core.clone().search_tracks("daft punk".into()), tracks);
+    step!(
+        "search",
+        core.clone().search_tracks("daft punk".into()),
+        tracks
+    );
 }
 
 fn tracks(t: &Vec<fastify_core::TrackInfo>) -> String {
     format!(
         "{} e.g. {:?}",
         t.len(),
-        t.iter().take(3).map(|x| format!("{} - {} ({}ms, img={})", x.title, x.artists, x.duration_ms, x.image_url.is_some())).collect::<Vec<_>>()
+        t.iter()
+            .take(3)
+            .map(|x| format!(
+                "{} - {} ({}ms, img={})",
+                x.title,
+                x.artists,
+                x.duration_ms,
+                x.image_url.is_some()
+            ))
+            .collect::<Vec<_>>()
     )
 }

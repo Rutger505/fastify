@@ -184,32 +184,51 @@ impl FastifyCore {
 
     /// The user's playlists (rootlist, folders flattened).
     pub async fn playlists(self: Arc<Self>) -> Result<Vec<PlaylistInfo>, CoreError> {
-        self.with_session(|s| async move { library::rootlist(&s).await }).await
+        self.with_session(|s| async move { library::rootlist(&s).await })
+            .await
     }
 
-    pub async fn playlist_tracks(self: Arc<Self>, playlist_id: String) -> Result<Vec<TrackInfo>, CoreError> {
-        self.with_session(|s| async move { library::playlist_tracks(&s, &playlist_id).await }).await
+    pub async fn playlist_tracks(
+        self: Arc<Self>,
+        playlist_id: String,
+    ) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::playlist_tracks(&s, &playlist_id).await })
+            .await
     }
 
     pub async fn liked_tracks(self: Arc<Self>) -> Result<Vec<TrackInfo>, CoreError> {
-        self.with_session(|s| async move { library::liked_tracks(&s).await }).await
+        self.with_session(|s| async move { library::liked_tracks(&s).await })
+            .await
     }
 
     pub async fn saved_albums(self: Arc<Self>) -> Result<Vec<AlbumInfo>, CoreError> {
-        self.with_session(|s| async move { library::saved_albums(&s).await }).await
+        self.with_session(|s| async move { library::saved_albums(&s).await })
+            .await
     }
 
-    pub async fn album_tracks(self: Arc<Self>, album_id: String) -> Result<Vec<TrackInfo>, CoreError> {
-        self.with_session(|s| async move { library::album_tracks(&s, &album_id).await }).await
+    pub async fn album_tracks(
+        self: Arc<Self>,
+        album_id: String,
+    ) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::album_tracks(&s, &album_id).await })
+            .await
     }
 
-    pub async fn search_tracks(self: Arc<Self>, query: String) -> Result<Vec<TrackInfo>, CoreError> {
-        self.with_session(|s| async move { library::search_tracks(&s, &query).await }).await
+    pub async fn search_tracks(
+        self: Arc<Self>,
+        query: String,
+    ) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::search_tracks(&s, &query).await })
+            .await
     }
 
     /// Metadata for track ids (e.g. local play history), in order.
-    pub async fn tracks(self: Arc<Self>, track_ids: Vec<String>) -> Result<Vec<TrackInfo>, CoreError> {
-        self.with_session(|s| async move { library::hydrate_tracks(&s, &track_ids).await }).await
+    pub async fn tracks(
+        self: Arc<Self>,
+        track_ids: Vec<String>,
+    ) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::hydrate_tracks(&s, &track_ids).await })
+            .await
     }
 
     /// True when the track can start without any network (audio file and key on disk).
@@ -291,7 +310,10 @@ impl FastifyCore {
 
     fn cache_credentials_path(&self) -> Option<PathBuf> {
         // Mirrors librespot's layout: <credentials dir>/credentials.json
-        self.keys.root().parent().map(|p| p.join("credentials").join("credentials.json"))
+        self.keys
+            .root()
+            .parent()
+            .map(|p| p.join("credentials").join("credentials.json"))
     }
 
     fn open_cached(&self, track_id: &str) -> Result<Option<TrackStream>, CoreError> {
@@ -333,7 +355,10 @@ impl FastifyCore {
             ..SessionConfig::default()
         };
         let session = Session::new(config, Some(self.cache.clone()));
-        session.connect(creds, true).await.map_err(CoreError::from)?;
+        session
+            .connect(creds, true)
+            .await
+            .map_err(CoreError::from)?;
         if let Some(old) = slot.replace(session.clone()) {
             old.shutdown();
         }
