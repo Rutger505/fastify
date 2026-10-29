@@ -1,0 +1,61 @@
+package com.rutger.fastify
+
+import android.app.Application
+import android.util.Log
+import com.rutger.fastify.auth.AuthManager
+import com.rutger.fastify.core.FastifyCore
+import com.rutger.fastify.data.LibraryRepository
+import com.rutger.fastify.data.SnapshotStore
+import com.rutger.fastify.data.WebApi
+import com.rutger.fastify.playback.PlayerConnection
+import com.rutger.fastify.playback.Prefetcher
+import com.rutger.fastify.playback.QueueStore
+import com.rutger.fastify.playback.StreamPool
+import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+
+/** Manual DI: every long-lived object, created lazily so app start does as little as possible. */
+class AppContainer(val app: Application) {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Rust core. Loading the native library happens on first use, off the main thread. */
+    val core: FastifyCore by lazy {
+        FastifyCore(app.filesDir.absolutePath, app.cacheDir.absolutePath, AUDIO_CACHE_BYTES.toULong())
+    }
+
+    val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .build()
+    }
+
+    val auth by lazy { AuthManager(app, { http }, { core }) }
+    val api by lazy { WebApi({ http }, auth) }
+    val snapshots by lazy { SnapshotStore(File(app.filesDir, "snapshots")) }
+    val library by lazy { LibraryRepository(api, snapshots) }
+    val queueStore by lazy { QueueStore(File(app.filesDir, "queue.json")) }
+    val streams by lazy { StreamPool { core } }
+    val prefetcher by lazy { Prefetcher(scope) { core } }
+    val player by lazy { PlayerConnection(app) }
+
+    /** Connect the Spotify session in the background while the UI draws from cache. */
+    fun warmUp() {
+        scope.launch(Dispatchers.IO) {
+            if (!auth.isLoggedIn) return@launch
+            runCatching { core.connect() }
+                .onSuccess { Log.i(TAG, "session ready for $it") }
+                .onFailure { Log.w(TAG, "warm-up connect failed", it) }
+        }
+    }
+
+    companion object {
+        const val TAG = "Fastify"
+        const val AUDIO_CACHE_BYTES = 2L * 1024 * 1024 * 1024
+    }
+}
