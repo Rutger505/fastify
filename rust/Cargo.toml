@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["core", "bindgen", "probe"]
+exclude = ["vendor"]
+
+# librespot-core 0.8.0 with a one-line patch (vendor/librespot-core/src/config.rs, search
+# "FASTIFY PATCH"): Android behaves like Linux so client-token/login5 work with the desktop
+# client id. Drop when upgrading librespot if upstream handles this.
+[patch.crates-io]
+librespot-core = { path = "vendor/librespot-core" }
 
 [profile.release]
 opt-level = 3

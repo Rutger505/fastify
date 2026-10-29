@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Fastify emulator helper for the OpenClaw VM (headless, 6 GB RAM).
+#
+#   emu start      boot the persistent AVD (logged-in app data survives) and wait for it
+#   emu stop       shut it down (do this before a Gradle build: both together OOM the VM)
+#   emu install    install the x86_64 debug APK (build: FASTIFY_ABIS=x86_64 ./gradlew assembleDebug)
+#   emu launch     force-stop + start the app, then 'emu ui'
+#   emu ui         screenshot (~/Temporary/fastify-screen.png) + visible texts
+#   emu logs       Fastify app logs since the last launch
+#   emu tap X Y    tap at screen coordinates (1080x1920)
+#
+# The emulator runs as the transient systemd user unit 'fastify-emulator', so it is not
+# killed when the shell/exec that started it exits.
+set -euo pipefail
+
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/share/android-sdk}"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.local/share/android/avd}"
+export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+
+AVD=Fastify_API35
+UNIT=fastify-emulator
+PKG=com.rutger.fastify
+LOG="$HOME/Temporary/fastify-emulator.log"
+SHOT="$HOME/Temporary/fastify-screen.png"
+APK="$(cd "$(dirname "$0")/.." && pwd)/app/build/outputs/apk/debug/app-debug.apk"
+mkdir -p "$HOME/Temporary"
+
+booted() { [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; }
+
+ui_texts() {
+  adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || return 0
+  adb shell cat /sdcard/ui.xml | grep -oE '(text|content-desc)="[^"]+"' | sed -E 's/^[a-z-]+="(.*)"$/\1/' || true
+}
+
+# "System UI isn't responding" dialogs appear while the software-rendered emulator settles
+# after boot. Press "Wait" until none is shown.
+dismiss_anr() {
+  for _ in 1 2 3 4 5; do
+    ui_texts | grep -q "isn't responding" || return 0
+    echo "dismissing ANR dialog" >&2
+    adb shell input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
+    adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >/dev/null 2>&1 || true
+    sleep 3
+  done
+}
+
+start() {
+  if systemctl --user is-active -q "$UNIT"; then
+    echo "already running"
+  else
+    test -c /dev/kvm || { echo "no /dev/kvm" >&2; exit 1; }
+    emulator -list-avds | grep -qx "$AVD" || { echo "AVD $AVD missing (see fastify skill)" >&2; exit 1; }
+    systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
+    # Never -wipe-data: the AVD holds the logged-in app data.
+    systemd-run --user --unit="$UNIT" --collect --quiet \
+      -E ANDROID_HOME -E ANDROID_SDK_ROOT -E ANDROID_AVD_HOME \
+      -p StandardOutput="file:$LOG" -p StandardError="file:$LOG" \
+      -p MemoryHigh=2G -p OOMScoreAdjust=500 \
+      "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -no-window -no-audio -no-boot-anim \
+      -no-snapshot -memory 1280 -cores 2 -gpu "${EMU_GPU:-guest}"
+  fi
+  timeout 60 adb wait-for-device || { tail -40 "$LOG"; exit 1; }
+  for _ in $(seq 1 90); do booted && break; sleep 2; done
+  booted || { echo "boot did not complete in 180s" >&2; tail -40 "$LOG"; exit 1; }
+  for s in window_animation_scale transition_animation_scale animator_duration_scale; do
+    adb shell settings put global "$s" 0
+  done
+  adb shell input keyevent KEYCODE_WAKEUP
+  adb shell wm dismiss-keyguard >/dev/null 2>&1 || true
+  sleep 5
+  dismiss_anr
+  echo "booted"
+}
+
+stop() {
+  adb emu kill >/dev/null 2>&1 || true
+  for _ in $(seq 1 15); do systemctl --user is-active -q "$UNIT" || break; sleep 1; done
+  systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
+  echo "stopped"
+}
+
+ui() {
+  dismiss_anr
+  adb exec-out screencap -p >"$SHOT"
+  echo "screenshot: $SHOT"
+  echo "focus: $(adb shell dumpsys window | grep -m1 mCurrentFocus | sed 's/^ *//')"
+  echo "--- visible text ---"
+  ui_texts
+}
+
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  install) test -s "$APK" || { echo "no $APK" >&2; exit 1; }; adb install -r "$APK" ;;
+  launch)
+    adb shell am force-stop "$PKG"
+    adb logcat -c
+    adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    sleep "${WAIT:-20}"
+    ui ;;
+  ui) ui ;;
+  logs) adb logcat -d | grep -E "Fastify/|fastify-core|AndroidRuntime" || true ;;
+  tap) adb shell input tap "$2" "$3" ;;
+  *) sed -n '2,12p' "$0"; exit 2 ;;
+esac
