@@ -6,7 +6,7 @@ import com.rutger.fastify.auth.AuthManager
 import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.data.LibraryRepository
 import com.rutger.fastify.data.SnapshotStore
-import com.rutger.fastify.data.WebApi
+import com.rutger.fastify.data.PlayHistory
 import com.rutger.fastify.playback.PlayerConnection
 import com.rutger.fastify.playback.Prefetcher
 import com.rutger.fastify.playback.QueueStore
@@ -37,9 +37,9 @@ class AppContainer(val app: Application) {
     }
 
     val auth by lazy { AuthManager(app, { http }, { core }) }
-    val api by lazy { WebApi({ http }, auth) }
+    val history by lazy { PlayHistory(File(app.filesDir, "history.json")) }
     val snapshots by lazy { SnapshotStore(File(app.filesDir, "snapshots")) }
-    val library by lazy { LibraryRepository(api, snapshots) }
+    val library by lazy { LibraryRepository({ core }, snapshots, history) }
     val queueStore by lazy { QueueStore(File(app.filesDir, "queue.json")) }
     val streams by lazy { StreamPool { core } }
     val prefetcher by lazy { Prefetcher(scope) { core } }

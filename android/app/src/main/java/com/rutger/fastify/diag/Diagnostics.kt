@@ -1,8 +1,6 @@
 package com.rutger.fastify.diag
 
-import android.net.Uri
 import com.rutger.fastify.AppContainer
-import com.rutger.fastify.auth.AuthManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -29,29 +27,22 @@ class Diagnostics(private val c: AppContainer) {
         }
 
         probe("Librespot session") { c.core.username().also { user = it }.let { "user=$it" } }
-        probe("Web API /me (OAuth token)") { webApi("/me", c.auth.token()) }
-        probe("Web API search (OAuth token)") { webApi("/search?q=daft%20punk&type=track&limit=5", c.auth.token()) }
-        probe("Web API /me/playlists (OAuth token)") { webApi("/me/playlists?limit=5", c.auth.token()) }
-        probe("Web API /me (keymaster token)") {
-            webApi("/me", c.core.accessToken(AuthManager.SCOPES.joinToString(",")).token)
+        var firstPlaylist: String? = null
+        probe("Playlists (rootlist)") {
+            val p = c.core.playlists()
+            firstPlaylist = p.firstOrNull { it.length > 0u }?.id
+            "${p.size} playlists, first: " + p.take(3).joinToString { "${it.name} (${it.length})" }
         }
-        val u = user?.let(Uri::encode) ?: "unknown"
-        probe("spclient rootlist") {
-            spclient("/playlist/v2/user/$u/rootlist?decorate=revision,attributes,length,owner&from=0&length=10")
+        firstPlaylist?.let { id ->
+            probe("Playlist tracks") { c.core.playlistTracks(id).let { "${it.size} tracks, first: ${it.firstOrNull()?.title}" } }
         }
-        probe("spclient recently-played") {
-            spclient("/recently-played/v3/user/$u/recently-played?format=json&limit=5&filter=default")
+        probe("Liked songs (collection)") { c.core.likedTracks().let { "${it.size} tracks, first: ${it.firstOrNull()?.title}" } }
+        probe("Saved albums (collection)") { c.core.savedAlbums().let { "${it.size} albums, first: ${it.firstOrNull()?.name}" } }
+        probe("Search (context-resolve)") {
+            c.core.searchTracks("daft punk").let { "${it.size} tracks: " + it.take(3).joinToString { t -> t.title } }
         }
-        probe("spclient searchview") {
-            spclient("/searchview/km/v4/search/daft%20punk?limit=5&entityVersion=2&catalogue=premium")
-        }
+        probe("Web API /me (OAuth token, expected 429)") { webApi("/me", c.auth.token()) }
         return results
-    }
-
-    private suspend fun spclient(path: String): String {
-        val bytes = c.core.spclientGet(path)
-        val text = bytes.toString(Charsets.UTF_8).filter { it.isLetterOrDigit() || it in " {}[]\":,._-/" }
-        return "${bytes.size} bytes: " + text.take(200)
     }
 
     private suspend fun webApi(path: String, token: String): String = withContext(Dispatchers.IO) {

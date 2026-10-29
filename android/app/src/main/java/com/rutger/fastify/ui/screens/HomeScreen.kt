@@ -54,6 +54,7 @@ fun HomeScreen(onOpen: (Collection) -> Unit, onDiagnostics: () -> Unit) {
                         c.player.stopAndClear()
                         c.queueStore.clear()
                         c.library.clear()
+                        c.history.clear()
                         c.streams.clear()
                         c.auth.logout()
                     }) { Icon(Icons.AutoMirrored.Filled.Logout, "Log out") }

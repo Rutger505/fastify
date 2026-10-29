@@ -1,22 +1,28 @@
 package com.rutger.fastify.data
 
-import android.net.Uri
+import com.rutger.fastify.core.FastifyCore
+import com.rutger.fastify.core.TrackInfo
+import com.rutger.fastify.diag.AppLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.builtins.nullable
 
-/** Stale-while-revalidate access to the user's library. */
-class LibraryRepository(private val api: WebApi, private val store: SnapshotStore) {
-
+/**
+ * Stale-while-revalidate access to the library. Everything comes from Spotify's internal APIs
+ * through the librespot session (the public Web API 429s for our client id).
+ * "Recently played" is Fastify's own play history.
+ */
+class LibraryRepository(
+    private val core: () -> FastifyCore,
+    private val store: SnapshotStore,
+    private val history: PlayHistory,
+) {
     fun cachedHome(): HomeData? = store.read(HOME, HomeData.serializer())
 
     fun home(): Flow<Loadable<HomeData>> = swr(HOME, HomeData.serializer(), ::fetchHome)
@@ -25,15 +31,8 @@ class LibraryRepository(private val api: WebApi, private val store: SnapshotStor
 
     fun tracks(c: Collection): Flow<Loadable<List<Track>>> = swr(c.cacheKey, TRACKS) { fetchTracks(c) }
 
-    suspend fun search(query: String): SearchResults {
-        val q = Uri.encode(query)
-        val dto = api.get("/search?q=$q&type=track,album,playlist&limit=20", SearchDto.serializer())
-        return SearchResults(
-            tracks = dto.tracks?.items.orEmpty().mapNotNull { it?.toTrack() },
-            albums = dto.albums?.items.orEmpty().mapNotNull { it?.toCollection() },
-            playlists = dto.playlists?.items.orEmpty().mapNotNull { it?.toCollection() },
-        )
-    }
+    suspend fun search(query: String): SearchResults =
+        SearchResults(tracks = timed("search '$query'") { core().searchTracks(query) }.map { it.toTrack() })
 
     fun clear() = store.clear()
 
@@ -45,65 +44,52 @@ class LibraryRepository(private val api: WebApi, private val store: SnapshotStor
             store.write(key, serializer, fresh)
             emit(Loadable(fresh, refreshing = false))
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-            com.rutger.fastify.diag.AppLog.w("Library", "refresh $key failed", e)
+            if (e is CancellationException) throw e
+            AppLog.w("Library", "refresh $key failed", e)
             emit(Loadable(cached, refreshing = false, error = "${e.javaClass.simpleName}: ${e.message}"))
         }
     }.flowOn(Dispatchers.IO)
 
     private suspend fun fetchHome(): HomeData = coroutineScope {
-        val recent = async {
-            runCatching {
-                api.get("/me/player/recently-played?limit=30", Paging.serializer(PlayHistoryDto.serializer()))
-                    .items.mapNotNull { it.track?.toTrack() }.distinctBy { it.id }
-            }.onFailure { com.rutger.fastify.diag.AppLog.w("Library", "recently played failed: ${it.message}") }
+        // Playlists are the core of the screen; albums/history failing shouldn't blank it.
+        val playlists = async { timed("playlists") { core().playlists() } }
+        val albums = async {
+            runCatching { timed("albums") { core().savedAlbums() } }
+                .onFailure { AppLog.w("Library", "saved albums failed: ${it.message}") }
                 .getOrDefault(emptyList())
         }
-        val playlists = async {
-            pages("/me/playlists?limit=50", 50, PlaylistDto.serializer().nullable).mapNotNull { it?.toCollection() }
-        }
-        val albums = async {
-            pages("/me/albums?limit=50", 50, SavedAlbumDto.serializer()).mapNotNull { it.album?.toCollection() }
-        }
-        HomeData(recent.await(), playlists.await(), albums.await())
+        HomeData(
+            recent = history.recent(),
+            playlists = playlists.await().map {
+                Collection(CollectionKind.PLAYLIST, it.id, it.name.ifEmpty { "Untitled" },
+                    listOfNotNull(it.owner.takeIf(String::isNotEmpty)?.let { o -> "By $o" },
+                        "${it.length} songs").joinToString(" • "),
+                    it.imageUrl)
+            },
+            albums = albums.await().map { Collection(CollectionKind.ALBUM, it.id, it.name, it.artists, it.imageUrl) },
+        )
     }
 
-    private suspend fun fetchTracks(c: Collection): List<Track> = when (c.kind) {
-        CollectionKind.LIKED ->
-            pages("/me/tracks?limit=50", 50, SavedTrackDto.serializer()).mapNotNull { it.track?.toTrack() }
-
-        CollectionKind.ALBUM -> {
-            val album = AlbumDto(id = c.id, name = c.title, images = c.imageUrl?.let { listOf(ImageDto(it)) })
-            pages("/albums/${c.id}/tracks?limit=50", 50, TrackDto.serializer()).mapNotNull { it.toTrack(album) }
+    private suspend fun fetchTracks(c: Collection): List<Track> = timed("tracks ${c.cacheKey}") {
+        when (c.kind) {
+            CollectionKind.LIKED -> core().likedTracks()
+            CollectionKind.PLAYLIST -> core().playlistTracks(c.id)
+            CollectionKind.ALBUM -> core().albumTracks(c.id)
         }
+    }.map { it.toTrack() }
 
-        CollectionKind.PLAYLIST -> {
-            val fields = "items(%s(id,name,type,is_local,duration_ms,artists(name),album(name,images))),next,total"
-            try {
-                pages("/playlists/${c.id}/tracks?limit=100&fields=" + Uri.encode(fields.format("track")), 100, PlaylistItemDto.serializer())
-            } catch (e: ApiException) {
-                if (e.code != 403 && e.code != 404) throw e
-                pages("/playlists/${c.id}/items?limit=100&fields=" + Uri.encode(fields.format("item")), 100, PlaylistItemDto.serializer())
-            }.mapNotNull { (it.track ?: it.item)?.toTrack() }
-        }
-    }
-
-    /** First page tells the total; the rest is fetched concurrently (4 at a time). */
-    private suspend fun <T> pages(path: String, pageSize: Int, item: KSerializer<T>): List<T> = coroutineScope {
-        val serializer = Paging.serializer(item)
-        val first = api.get(path, serializer)
-        if (first.next == null) return@coroutineScope first.items
-        val offsets = (pageSize until minOf(first.total, MAX_ITEMS) step pageSize).toList()
-        val gate = Semaphore(4)
-        val rest = offsets.map { offset ->
-            async { gate.withPermit { api.get("$path&offset=$offset", serializer).items } }
-        }.awaitAll()
-        first.items + rest.flatten()
+    private suspend fun <T> timed(what: String, block: suspend () -> T): T {
+        val start = System.currentTimeMillis()
+        val result = block()
+        val size = (result as? kotlin.collections.Collection<*>)?.size
+        AppLog.i("Library", "$what: ${size ?: "ok"} in ${System.currentTimeMillis() - start} ms")
+        return result
     }
 
     companion object {
         private const val HOME = "home"
-        private const val MAX_ITEMS = 10_000
         private val TRACKS = ListSerializer(Track.serializer())
     }
 }
+
+fun TrackInfo.toTrack() = Track(id, title, artists, album, imageUrl, durationMs.toLong())

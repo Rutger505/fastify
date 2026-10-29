@@ -5,6 +5,7 @@
 
 mod error;
 mod keystore;
+mod library;
 mod stream;
 
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use tokio::sync::Mutex;
 
 pub use error::CoreError;
 use keystore::{KeyEntry, KeyStore};
+pub use library::{AlbumInfo, PlaylistInfo, TrackInfo};
 pub use stream::TrackStream;
 
 uniffi::setup_scaffolding!();
@@ -180,6 +182,36 @@ impl FastifyCore {
             .map_err(CoreError::other)?
     }
 
+    /// The user's playlists (rootlist, folders flattened).
+    pub async fn playlists(self: Arc<Self>) -> Result<Vec<PlaylistInfo>, CoreError> {
+        self.with_session(|s| async move { library::rootlist(&s).await }).await
+    }
+
+    pub async fn playlist_tracks(self: Arc<Self>, playlist_id: String) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::playlist_tracks(&s, &playlist_id).await }).await
+    }
+
+    pub async fn liked_tracks(self: Arc<Self>) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::liked_tracks(&s).await }).await
+    }
+
+    pub async fn saved_albums(self: Arc<Self>) -> Result<Vec<AlbumInfo>, CoreError> {
+        self.with_session(|s| async move { library::saved_albums(&s).await }).await
+    }
+
+    pub async fn album_tracks(self: Arc<Self>, album_id: String) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::album_tracks(&s, &album_id).await }).await
+    }
+
+    pub async fn search_tracks(self: Arc<Self>, query: String) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::search_tracks(&s, &query).await }).await
+    }
+
+    /// Metadata for track ids (e.g. local play history), in order.
+    pub async fn tracks(self: Arc<Self>, track_ids: Vec<String>) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::hydrate_tracks(&s, &track_ids).await }).await
+    }
+
     /// True when the track can start without any network (audio file and key on disk).
     pub fn is_track_cached(&self, track_id: String) -> bool {
         self.keys
@@ -243,6 +275,20 @@ impl FastifyCore {
 }
 
 impl FastifyCore {
+    /// Run `f` with a live session on the core runtime (UniFFI futures run on a foreign executor).
+    async fn with_session<T, F, Fut>(self: Arc<Self>, f: F) -> Result<T, CoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Session) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, CoreError>> + Send + 'static,
+    {
+        let this = self.clone();
+        self.rt
+            .spawn(async move { f(this.session().await?).await })
+            .await
+            .map_err(CoreError::other)?
+    }
+
     fn cache_credentials_path(&self) -> Option<PathBuf> {
         // Mirrors librespot's layout: <credentials dir>/credentials.json
         self.keys.root().parent().map(|p| p.join("credentials").join("credentials.json"))

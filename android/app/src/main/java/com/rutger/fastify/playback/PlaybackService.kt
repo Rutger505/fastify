@@ -121,6 +121,9 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            mediaItem?.let { item ->
+                container.scope.launch(Dispatchers.IO) { container.history.record(item.toTrack()) }
+            }
             saveQueue()
             prefetchUpcoming()
         }
