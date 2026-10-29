@@ -157,6 +157,29 @@ impl FastifyCore {
             .map_err(CoreError::other)?
     }
 
+    /// Username of the connected session (connects if needed).
+    pub async fn username(self: Arc<Self>) -> Result<String, CoreError> {
+        self.connect().await
+    }
+
+    /// Raw GET against Spotify's internal API (spclient), e.g. `/playlist/v2/user/x/rootlist`.
+    /// Used for diagnostics now and as the base for internal-API library/search.
+    pub async fn spclient_get(self: Arc<Self>, path: String) -> Result<Vec<u8>, CoreError> {
+        let this = self.clone();
+        self.rt
+            .spawn(async move {
+                let session = this.session().await?;
+                let body = session
+                    .spclient()
+                    .request(&http::Method::GET, &path, None, None)
+                    .await
+                    .map_err(CoreError::from)?;
+                Ok(body.to_vec())
+            })
+            .await
+            .map_err(CoreError::other)?
+    }
+
     /// True when the track can start without any network (audio file and key on disk).
     pub fn is_track_cached(&self, track_id: String) -> bool {
         self.keys

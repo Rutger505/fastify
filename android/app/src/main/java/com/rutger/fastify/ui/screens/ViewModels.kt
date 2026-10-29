@@ -69,7 +69,9 @@ class SearchViewModel(private val repo: LibraryRepository) : ViewModel() {
                     try {
                         SearchState(q, results = repo.search(q))
                     } catch (e: Exception) {
-                        SearchState(q, error = e.message)
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        com.rutger.fastify.diag.AppLog.w("Search", "search '$q' failed", e)
+                        SearchState(q, error = "${e.javaClass.simpleName}: ${e.message}")
                     },
                 )
             }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,7 +37,7 @@ import java.time.LocalTime
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onOpen: (Collection) -> Unit) {
+fun HomeScreen(onOpen: (Collection) -> Unit, onDiagnostics: () -> Unit) {
     val c = LocalContext.current.container
     val vm = viewModel { HomeViewModel(c.library) }
     val state by vm.state.collectAsStateWithLifecycle()
@@ -48,6 +49,7 @@ fun HomeScreen(onOpen: (Collection) -> Unit) {
             item {
                 Row(Modifier.padding(start = 16.dp, top = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(greeting(), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDiagnostics) { Icon(Icons.Default.BugReport, "Diagnostics") }
                     IconButton(onClick = {
                         c.player.stopAndClear()
                         c.queueStore.clear()
@@ -59,15 +61,24 @@ fun HomeScreen(onOpen: (Collection) -> Unit) {
             }
             state.error?.let { err ->
                 item {
-                    Text(
-                        if (home == null) "Couldn't load your library: $err" else "Offline – showing cached library",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    ErrorCard(
+                        if (home == null) "Couldn't load your library" else "Refresh failed, showing cached library",
+                        err,
+                        onRetry = vm::refresh,
+                        onDiagnostics = onDiagnostics,
                     )
                 }
             }
-            if (home == null) return@LazyColumn
+            if (home == null) {
+                if (state.refreshing) {
+                    item {
+                        androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
+                            androidx.compose.material3.CircularProgressIndicator()
+                        }
+                    }
+                }
+                return@LazyColumn
+            }
 
             if (home.recent.isNotEmpty()) {
                 item { SectionHeader("Recently played") }

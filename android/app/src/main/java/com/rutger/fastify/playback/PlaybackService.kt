@@ -116,6 +116,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     private inner class PlayerEvents : Player.Listener {
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            com.rutger.fastify.diag.AppLog.e("Player", "playback error ${error.errorCodeName} on ${player.currentMediaItem?.mediaId}", error)
+        }
+
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             saveQueue()
             prefetchUpcoming()

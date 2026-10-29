@@ -79,7 +79,9 @@ class AuthManager(
         )
         val refresh = tokens.refreshToken ?: error("Spotify returned no refresh token")
         store(tokens.accessToken, tokens.expiresIn, refresh)
+        com.rutger.fastify.diag.AppLog.i("Auth", "OAuth ok, scopes granted: ${tokens.scope}")
         core().login(tokens.accessToken)
+        com.rutger.fastify.diag.AppLog.i("Auth", "librespot login ok")
         _loggedIn.value = true
     }
 
@@ -103,7 +105,7 @@ class AuthManager(
                 t.accessToken
             } catch (e: Exception) {
                 // Fall back to a keymaster token through the librespot session.
-                Log.w(TAG, "refresh failed, falling back to keymaster", e)
+                com.rutger.fastify.diag.AppLog.w("Auth", "token refresh failed, falling back to keymaster", e)
                 val t = core().accessToken(SCOPES.joinToString(","))
                 accessToken = t.token
                 expiresAt = t.expiresAtMs.toLong()
@@ -174,6 +176,7 @@ class AuthManager(
         @SerialName("access_token") val accessToken: String,
         @SerialName("expires_in") val expiresIn: Long,
         @SerialName("refresh_token") val refreshToken: String? = null,
+        val scope: String? = null,
     )
 
     class NotLoggedInException : IllegalStateException("Not logged in")

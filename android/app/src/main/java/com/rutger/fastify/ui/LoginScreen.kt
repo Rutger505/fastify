@@ -63,7 +63,8 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
                             context.container.player.connect()
                             onLoggedIn()
                         } catch (e: Exception) {
-                            error = e.message ?: e.javaClass.simpleName
+                            com.rutger.fastify.diag.AppLog.e("Login", "login failed", e)
+                            error = "${e.javaClass.simpleName}: ${e.message}"
                         } finally {
                             busy = false
                         }
@@ -72,7 +73,7 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
             }
             error?.let {
                 Spacer(Modifier.height(16.dp))
-                Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                com.rutger.fastify.ui.screens.ErrorCard("Login failed", it)
             }
         }
     }

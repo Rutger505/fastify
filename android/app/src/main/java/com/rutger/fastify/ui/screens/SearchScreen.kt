@@ -54,7 +54,7 @@ fun SearchScreen(onOpen: (Collection) -> Unit) {
         )
         when {
             state.loading && results == null -> Box(Modifier.fillMaxWidth().padding(32.dp), Alignment.Center) { CircularProgressIndicator() }
-            state.error != null -> Text("Search failed: ${state.error}", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+            state.error != null -> ErrorCard("Search failed", state.error!!)
         }
         if (results != null) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {

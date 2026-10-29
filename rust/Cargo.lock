@@ -555,6 +555,7 @@ version = "0.1.0"
 dependencies = [
  "android_logger",
  "hex",
+ "http",
  "librespot-audio",
  "librespot-core",
  "librespot-metadata",

@@ -15,6 +15,7 @@ class FastifyApp : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        com.rutger.fastify.diag.AppLog.init(this)
         container = AppContainer(this)
         container.warmUp()
     }

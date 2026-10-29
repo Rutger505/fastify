@@ -20,8 +20,8 @@ android {
         applicationId = "com.rutger.fastify"
         minSdk = 35
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0+" + gitDescribe.get()
+        versionCode = 2
+        versionName = "0.2.0+" + gitDescribe.get()
         ndk { abiFilters += (providers.environmentVariable("FASTIFY_ABIS").orNull ?: "arm64-v8a").split(" ") }
     }
 
@@ -35,7 +35,10 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 /** Builds the Rust core with cargo-ndk and generates its UniFFI Kotlin bindings. */

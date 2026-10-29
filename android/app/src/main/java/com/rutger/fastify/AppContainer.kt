@@ -1,7 +1,7 @@
 package com.rutger.fastify
 
 import android.app.Application
-import android.util.Log
+import com.rutger.fastify.diag.AppLog
 import com.rutger.fastify.auth.AuthManager
 import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.data.LibraryRepository
@@ -32,6 +32,7 @@ class AppContainer(val app: Application) {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
             .build()
     }
 
@@ -49,8 +50,8 @@ class AppContainer(val app: Application) {
         scope.launch(Dispatchers.IO) {
             if (!auth.isLoggedIn) return@launch
             runCatching { core.connect() }
-                .onSuccess { Log.i(TAG, "session ready for $it") }
-                .onFailure { Log.w(TAG, "warm-up connect failed", it) }
+                .onSuccess { AppLog.i("Core", "session ready for $it") }
+                .onFailure { AppLog.w("Core", "warm-up connect failed", it) }
         }
     }
 

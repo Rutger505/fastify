@@ -29,6 +29,7 @@ class SpotifyDataSource(private val pool: StreamPool) : BaseDataSource(/* isNetw
         val s = try {
             pool.get(trackId)
         } catch (e: CoreException) {
+            com.rutger.fastify.diag.AppLog.e("Stream", "open $trackId failed", e)
             throw IOException("Can't open track $trackId: ${e.message}", e)
         }
         val length = s.length().toLong()

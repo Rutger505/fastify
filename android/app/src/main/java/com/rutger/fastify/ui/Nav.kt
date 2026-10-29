@@ -26,6 +26,7 @@ import androidx.navigation.navArgument
 import com.rutger.fastify.container
 import com.rutger.fastify.data.Collection
 import com.rutger.fastify.ui.screens.CollectionScreen
+import com.rutger.fastify.ui.screens.DiagnosticsScreen
 import com.rutger.fastify.ui.screens.HomeScreen
 import com.rutger.fastify.ui.screens.MiniPlayer
 import com.rutger.fastify.ui.screens.PlayerScreen
@@ -70,7 +71,8 @@ fun FastifyNavHost() {
         },
     ) { padding ->
         NavHost(nav, startDestination = "home", modifier = Modifier.padding(padding)) {
-            composable("home") { HomeScreen(onOpen = nav::openCollection) }
+            composable("home") { HomeScreen(onOpen = nav::openCollection, onDiagnostics = { nav.navigate("diagnostics") }) }
+            composable("diagnostics") { DiagnosticsScreen(onBack = { nav.popBackStack() }) }
             composable("search") { SearchScreen(onOpen = nav::openCollection) }
             composable(
                 "collection?c={c}",

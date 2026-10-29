@@ -1,6 +1,7 @@
 package com.rutger.fastify.data
 
 import com.rutger.fastify.auth.AuthManager
+import com.rutger.fastify.diag.AppLog
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -26,21 +27,29 @@ class WebApi(private val http: () -> OkHttpClient, private val auth: AuthManager
     suspend fun getRaw(pathOrUrl: String): String = withContext(Dispatchers.IO) {
         val url = if (pathOrUrl.startsWith("http")) pathOrUrl else BASE + pathOrUrl
         var forceRefresh = false
-        repeat(4) { attempt ->
+        repeat(3) { attempt ->
             val request = Request.Builder()
                 .url(url)
                 .header("Authorization", "Bearer " + auth.token(forceRefresh))
                 .build()
+            val start = System.currentTimeMillis()
             http().newCall(request).execute().use { resp ->
+                val ms = System.currentTimeMillis() - start
+                if (resp.isSuccessful) {
+                    AppLog.i("WebApi", "GET ${request.url.encodedPath} -> ${resp.code} ($ms ms)")
+                    return@withContext resp.body.string()
+                }
+                val body = resp.body.string().take(300).replace("\n", " ")
+                val retryAfter = resp.header("Retry-After")?.toLongOrNull()
+                val msg = "HTTP ${resp.code} for GET ${request.url.encodedPath}" +
+                    (retryAfter?.let { " (Retry-After ${it}s)" } ?: "") + ": $body"
+                AppLog.w("WebApi", "$msg ($ms ms, attempt ${attempt + 1})")
                 when {
-                    resp.isSuccessful -> return@withContext resp.body.string()
                     resp.code == 401 && !forceRefresh -> forceRefresh = true
-                    resp.code == 429 || resp.code >= 500 -> {
-                        val wait = resp.header("Retry-After")?.toLongOrNull()?.times(1000)
-                            ?: (500L shl attempt)
-                        delay(wait.coerceAtMost(10_000))
-                    }
-                    else -> throw ApiException(resp.code, "Spotify API ${resp.code} for ${request.url.encodedPath}")
+                    // Long Retry-After = blocked/quota, not a blip: fail now so the UI shows it.
+                    resp.code == 429 && (retryAfter ?: 0) > 5 -> throw ApiException(429, msg)
+                    resp.code == 429 || resp.code >= 500 -> delay(retryAfter?.times(1000) ?: (500L shl attempt))
+                    else -> throw ApiException(resp.code, msg)
                 }
             }
         }

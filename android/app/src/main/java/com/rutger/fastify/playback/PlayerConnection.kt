@@ -139,5 +139,5 @@ class PlayerConnection(private val context: Context) {
     }
 
     private fun describe(e: PlaybackException): String =
-        e.cause?.message ?: e.errorCodeName
+        e.errorCodeName + (e.cause?.message?.let { ": $it" } ?: "")
 }

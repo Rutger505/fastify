@@ -130,7 +130,9 @@ fun PlayerScreen(onClose: () -> Unit) {
             Text(formatTime(state.durationMs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         state.error?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
         }
         Spacer(Modifier.height(8.dp))
         Row(

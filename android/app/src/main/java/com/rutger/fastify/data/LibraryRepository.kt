@@ -45,7 +45,9 @@ class LibraryRepository(private val api: WebApi, private val store: SnapshotStor
             store.write(key, serializer, fresh)
             emit(Loadable(fresh, refreshing = false))
         } catch (e: Exception) {
-            emit(Loadable(cached, refreshing = false, error = e.message ?: e.javaClass.simpleName))
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            com.rutger.fastify.diag.AppLog.w("Library", "refresh $key failed", e)
+            emit(Loadable(cached, refreshing = false, error = "${e.javaClass.simpleName}: ${e.message}"))
         }
     }.flowOn(Dispatchers.IO)
 
@@ -54,7 +56,8 @@ class LibraryRepository(private val api: WebApi, private val store: SnapshotStor
             runCatching {
                 api.get("/me/player/recently-played?limit=30", Paging.serializer(PlayHistoryDto.serializer()))
                     .items.mapNotNull { it.track?.toTrack() }.distinctBy { it.id }
-            }.getOrDefault(emptyList())
+            }.onFailure { com.rutger.fastify.diag.AppLog.w("Library", "recently played failed: ${it.message}") }
+                .getOrDefault(emptyList())
         }
         val playlists = async {
             pages("/me/playlists?limit=50", 50, PlaylistDto.serializer().nullable).mapNotNull { it?.toCollection() }

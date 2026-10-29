@@ -85,11 +85,10 @@ fun CollectionScreen(collection: Collection, onBack: () -> Unit) {
             }
             state.error?.let { err ->
                 item {
-                    Text(
-                        if (state.data == null) "Couldn't load: $err" else "Offline – showing cached tracks",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 16.dp),
+                    ErrorCard(
+                        if (state.data == null) "Couldn't load tracks" else "Refresh failed, showing cached tracks",
+                        err,
+                        onRetry = vm::refresh,
                     )
                 }
             }
