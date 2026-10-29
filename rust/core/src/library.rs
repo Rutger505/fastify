@@ -260,7 +260,8 @@ pub async fn album_tracks(session: &Session, id: &str) -> Result<Vec<TrackInfo>,
     hydrate_tracks(session, &ids).await
 }
 
-/// Liked songs (newest first) and saved albums share the "collection" set.
+/// Liked songs and saved albums share the "collection" set. The server's page order is not
+/// chronological, so items are sorted by `added_at`, most recently added first.
 async fn collection(session: &Session) -> Result<Vec<String>, CoreError> {
     let username = session.username();
     let mut uris = Vec::new();
@@ -288,7 +289,9 @@ async fn collection(session: &Session) -> Result<Vec<String>, CoreError> {
         token = next;
     }
     log::info!("collection: {} items", uris.len());
-    Ok(uris)
+    // Stable sort: items with equal timestamps keep the server order.
+    uris.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+    Ok(uris.into_iter().map(|i| i.uri).collect())
 }
 
 pub async fn liked_tracks(session: &Session) -> Result<Vec<TrackInfo>, CoreError> {
@@ -447,9 +450,16 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct CollectionItem {
+    uri: String,
+    /// Unix seconds.
+    added_at: u64,
+}
+
 /// PageResponse { repeated CollectionItem items = 1; next_page_token = 2 },
 /// CollectionItem { uri = 1; added_at = 2; is_removed = 3 }
-fn decode_page_response(data: &[u8]) -> Result<(Vec<String>, String), String> {
+fn decode_page_response(data: &[u8]) -> Result<(Vec<CollectionItem>, String), String> {
     let mut items = Vec::new();
     let mut next = String::new();
     let mut err = None;
@@ -457,6 +467,7 @@ fn decode_page_response(data: &[u8]) -> Result<(Vec<String>, String), String> {
         1 => {
             let mut uri = String::new();
             let mut removed = false;
+            let mut added_at = 0;
             let mut r = Reader(payload);
             // Parse manually to also see the varint is_removed flag.
             while !r.0.is_empty() {
@@ -466,6 +477,7 @@ fn decode_page_response(data: &[u8]) -> Result<(Vec<String>, String), String> {
                         Ok(b) => uri = String::from_utf8_lossy(b).into_owned(),
                         Err(e) => err = Some(e),
                     },
+                    (2, 0) => added_at = r.varint().unwrap_or(0),
                     (3, 0) => removed = r.varint().unwrap_or(0) != 0,
                     (_, 0) => {
                         let _ = r.varint();
@@ -483,7 +495,7 @@ fn decode_page_response(data: &[u8]) -> Result<(Vec<String>, String), String> {
                 }
             }
             if !removed && !uri.is_empty() {
-                items.push(uri);
+                items.push(CollectionItem { uri, added_at });
             }
         }
         2 => next = String::from_utf8_lossy(payload).into_owned(),
@@ -504,6 +516,8 @@ mod tests {
         // Build a fake PageResponse: two items (one removed) + token.
         let mut item1 = Vec::new();
         put_str(&mut item1, 1, "spotify:track:4uLU6hMCjMI75M1A2tKUQC");
+        put_varint(&mut item1, 2 << 3);
+        put_varint(&mut item1, 1_700_000_000);
         let mut item2 = Vec::new();
         put_str(&mut item2, 1, "spotify:album:abc");
         put_varint(&mut item2, 3 << 3);
@@ -516,7 +530,13 @@ mod tests {
         }
         put_str(&mut resp, 2, "next");
         let (items, next) = decode_page_response(&resp).unwrap();
-        assert_eq!(items, vec!["spotify:track:4uLU6hMCjMI75M1A2tKUQC"]);
+        assert_eq!(
+            items,
+            vec![CollectionItem {
+                uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".into(),
+                added_at: 1_700_000_000,
+            }]
+        );
         assert_eq!(next, "next");
     }
 
