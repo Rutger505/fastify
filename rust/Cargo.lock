@@ -664,8 +664,12 @@ name = "fastify-core"
 version = "0.1.0"
 dependencies = [
  "android_logger",
+ "bytes",
  "hex",
  "http",
+ "http-body-util",
+ "hyper-rustls 0.27.10",
+ "hyper-util",
  "librespot-audio",
  "librespot-core",
  "librespot-metadata",

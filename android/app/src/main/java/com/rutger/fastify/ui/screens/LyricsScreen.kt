@@ -42,7 +42,7 @@ import com.rutger.fastify.data.LyricsData
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
-private sealed interface LyricsState {
+internal sealed interface LyricsState {
     data object Loading : LyricsState
     data object None : LyricsState
     data class Error(val message: String) : LyricsState
@@ -56,25 +56,8 @@ fun LyricsScreen(onClose: () -> Unit) {
     val player = c.player
     val playerState by player.state.collectAsStateWithLifecycle()
     val track = playerState.current
-    var lyrics by remember { mutableStateOf<LyricsState>(LyricsState.Loading) }
-    var position by remember { mutableLongStateOf(0L) }
-
-    LaunchedEffect(track?.id) {
-        val id = track?.id ?: return@LaunchedEffect
-        lyrics = LyricsState.Loading
-        lyrics = try {
-            c.library.lyrics(id)?.let { LyricsState.Loaded(it) } ?: LyricsState.None
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-            LyricsState.Error("${e.javaClass.simpleName}: ${e.message}")
-        }
-    }
-    LaunchedEffect(Unit) {
-        while (true) {
-            position = player.position()
-            delay(200)
-        }
-    }
+    val lyrics = rememberLyrics(track?.id)
+    val position = rememberPlaybackPosition()
 
     val background = Color(0xFF3A3A5C)
     Column(Modifier.fillMaxSize().background(background)) {
@@ -100,10 +83,46 @@ fun LyricsScreen(onClose: () -> Unit) {
     }
 }
 
+/** Lyrics of [trackId] (cached forever by the repository), reloaded when the track changes. */
+@Composable
+internal fun rememberLyrics(trackId: String?): LyricsState {
+    val c = LocalContext.current.container
+    var lyrics by remember { mutableStateOf<LyricsState>(LyricsState.Loading) }
+    LaunchedEffect(trackId) {
+        val id = trackId ?: return@LaunchedEffect
+        lyrics = LyricsState.Loading
+        lyrics = try {
+            c.library.lyrics(id)?.let { LyricsState.Loaded(it) } ?: LyricsState.None
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            LyricsState.Error("${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+    return lyrics
+}
+
+/** Playback position, polled while shown (the player state only updates it coarsely). */
+@Composable
+internal fun rememberPlaybackPosition(): Long {
+    val player = LocalContext.current.container.player
+    var position by remember { mutableLongStateOf(player.position()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            position = player.position()
+            delay(200)
+        }
+    }
+    return position
+}
+
+/** Index of the line being sung, -1 before the first line or for unsynced lyrics. */
+internal fun LyricsData.currentLine(position: Long): Int =
+    if (synced) lines.indexOfLast { it.startMs <= position } else -1
+
 @Composable
 private fun LyricsLines(lyrics: LyricsData, position: Long, onSeek: (Long) -> Unit) {
     val lines = lyrics.lines
-    val current = if (lyrics.synced) lines.indexOfLast { it.startMs <= position } else -1
+    val current = lyrics.currentLine(position)
     val listState = rememberLazyListState()
     LaunchedEffect(current) {
         // Keep the current line in the upper third, like Spotify.

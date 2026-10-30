@@ -74,6 +74,7 @@ class LibraryRepository(
             singles = a.singles.map { it.toCollection() },
             compilations = a.compilations.map { it.toCollection() },
             appearsOn = a.appearsOn.map { it.toCollection(showArtists = true) },
+            playcounts = a.topPlaycounts.mapValues { it.value.toLong() },
         )
     }
 

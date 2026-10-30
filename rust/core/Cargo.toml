@@ -22,6 +22,10 @@ hex = "0.4"
 http = "1"
 librespot-protocol = "0.8.0"
 protobuf = "3.7"
+bytes = "1"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", default-features = false, features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "webpki-tokio"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"

@@ -6,11 +6,12 @@ use librespot_protocol::extension_kind::ExtensionKind;
 use librespot_protocol::metadata;
 use protobuf::Message;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::CoreError;
 use crate::library::{
-    AlbumInfo, TrackInfo, album_info, base62, best_image, collection_set, extended,
-    hydrate_albums, hydrate_tracks, id_from_uri, parse_id,
+    AlbumInfo, TrackInfo, album_info, base62, best_image, collection_set, extended, hydrate_albums,
+    hydrate_tracks, id_from_uri, parse_id,
 };
 
 #[derive(uniffi::Record, Clone)]
@@ -21,6 +22,8 @@ pub struct ArtistPage {
     /// Spotify sends light HTML (links to other artists).
     pub biography: Option<String>,
     pub top_tracks: Vec<TrackInfo>,
+    /// Total streams per top track id. Empty when pathfinder failed (the page still works).
+    pub top_playcounts: HashMap<String, u64>,
     pub albums: Vec<AlbumInfo>,
     pub singles: Vec<AlbumInfo>,
     pub compilations: Vec<AlbumInfo>,
@@ -72,7 +75,12 @@ pub async fn artist(session: &Session, id: &str) -> Result<ArtistPage, CoreError
         "spotify:artist:{}",
         parse_id(id)?.to_base62().map_err(CoreError::from)?
     );
-    let data = extended(session, std::slice::from_ref(&uri), ExtensionKind::ARTIST_V4).await?;
+    let data = extended(
+        session,
+        std::slice::from_ref(&uri),
+        ExtensionKind::ARTIST_V4,
+    )
+    .await?;
     let bytes = data.get(&uri).ok_or_else(|| CoreError::NotFound {
         msg: format!("artist {id}"),
     })?;
@@ -100,14 +108,32 @@ pub async fn artist(session: &Session, id: &str) -> Result<ArtistPage, CoreError
     let compilation_ids = group_ids(&a.compilation_group, MAX_RELEASES);
     let appears_ids = group_ids(&a.appears_on_group, MAX_APPEARS_ON);
 
-    let (top_tracks, mut albums, mut singles, mut compilations, mut appears_on) = tokio::try_join!(
+    let base62_id = parse_id(id)?.to_base62().map_err(CoreError::from)?;
+    let playcounts = async {
+        // Optional extra: never fail the artist page over it.
+        Ok::<_, CoreError>(
+            crate::pathfinder::artist_playcounts(session, &base62_id)
+                .await
+                .unwrap_or_else(|e| {
+                    log::warn!("artist {base62_id}: play counts failed: {e}");
+                    HashMap::new()
+                }),
+        )
+    };
+    let (top_playcounts, top_tracks, mut albums, mut singles, mut compilations, mut appears_on) = tokio::try_join!(
+        playcounts,
         hydrate_tracks(session, &top_ids),
         hydrate_albums(session, &album_ids),
         hydrate_albums(session, &single_ids),
         hydrate_albums(session, &compilation_ids),
         hydrate_albums(session, &appears_ids),
     )?;
-    for list in [&mut albums, &mut singles, &mut compilations, &mut appears_on] {
+    for list in [
+        &mut albums,
+        &mut singles,
+        &mut compilations,
+        &mut appears_on,
+    ] {
         sort_releases(list);
     }
 
@@ -143,6 +169,7 @@ pub async fn artist(session: &Session, id: &str) -> Result<ArtistPage, CoreError
         image_url,
         biography,
         top_tracks,
+        top_playcounts,
         albums,
         singles,
         compilations,
@@ -201,7 +228,11 @@ pub async fn new_releases(session: &Session, days: u32) -> Result<Vec<AlbumInfo>
     let mut albums: Vec<AlbumInfo> = hydrate_albums(session, &ids)
         .await?
         .into_iter()
-        .filter(|a| a.release_date.as_deref().is_some_and(|d| d >= cutoff.as_str()))
+        .filter(|a| {
+            a.release_date
+                .as_deref()
+                .is_some_and(|d| d >= cutoff.as_str())
+        })
         .collect();
     albums.sort_by(|a, b| b.release_date.cmp(&a.release_date));
     log::info!(

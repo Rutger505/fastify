@@ -8,6 +8,7 @@ mod edit;
 mod error;
 mod keystore;
 mod library;
+mod pathfinder;
 mod stream;
 
 use std::path::PathBuf;
@@ -24,9 +25,9 @@ use librespot_metadata::{Metadata, Track};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
+pub use catalog::{AlbumPage, ArtistPage, LyricLine, Lyrics};
 pub use error::CoreError;
 use keystore::{KeyEntry, KeyStore};
-pub use catalog::{AlbumPage, ArtistPage, LyricLine, Lyrics};
 pub use library::{AlbumInfo, ArtistRef, PlaylistInfo, TrackInfo};
 pub use stream::TrackStream;
 

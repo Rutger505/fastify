@@ -1,6 +1,12 @@
 package com.rutger.fastify.ui.screens
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -156,6 +162,48 @@ fun SwipeToSkip(player: PlayerConnection, modifier: Modifier = Modifier, content
     }
 }
 
+/**
+ * The line being sung right under the cover (plus the next one, dimmed); tap for full lyrics.
+ * Takes no space when the track has no synced lyrics, so the cover keeps its size.
+ */
+@Composable
+private fun LyricsPreview(trackId: String?, onOpen: () -> Unit) {
+    val lyrics = (rememberLyrics(trackId) as? LyricsState.Loaded)?.lyrics?.takeIf { it.synced && it.lines.isNotEmpty() } ?: return
+    val position = rememberPlaybackPosition()
+    val current = lyrics.currentLine(position)
+    Column(Modifier.fillMaxWidth().padding(top = 16.dp).clickable(onClick = onOpen)) {
+        // New lines come in from the bottom and push the old one out the top.
+        AnimatedContent(
+            targetState = current,
+            transitionSpec = {
+                (slideInVertically { it } + fadeIn()) togetherWith (slideOutVertically { -it } + fadeOut())
+            },
+            label = "lyric line",
+        ) { i ->
+            Column {
+                Text(
+                    lyrics.lines.getOrNull(i)?.words?.ifBlank { null } ?: "♪",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    lyrics.lines.getOrNull(i + 1)?.words.orEmpty(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(onClose: () -> Unit) {
@@ -215,6 +263,7 @@ fun PlayerScreen(onClose: () -> Unit) {
             Artwork(track?.imageUrl, 1000.dp, modifier = Modifier.fillMaxSize(), corner = 8.dp)
         }
         }
+        LyricsPreview(track?.id, onOpen = nav::openLyrics)
         Spacer(Modifier.height(24.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {

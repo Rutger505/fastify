@@ -82,6 +82,8 @@ fun TrackRow(
     downloaded: Boolean = false,
     onMore: (() -> Unit)? = null,
     number: Int? = null,
+    /** Second line instead of the artists (e.g. play count on artist pages). */
+    subtitle: String? = null,
 ) {
     Row(
         modifier.fillMaxWidth().clickable(onClick = onClick)
@@ -105,7 +107,7 @@ fun TrackRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (downloaded) DownloadedMark()
                 Text(
-                    track.artists,
+                    subtitle ?: track.artists,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

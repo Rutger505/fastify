@@ -69,6 +69,8 @@ data class ArtistPageData(
     val singles: List<Collection>,
     val compilations: List<Collection>,
     val appearsOn: List<Collection>,
+    /** Total streams per top track id; empty when Spotify didn't provide them. */
+    val playcounts: Map<String, Long> = emptyMap(),
 )
 
 /** Album details the track list doesn't carry: who made it and when. */

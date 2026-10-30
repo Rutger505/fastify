@@ -19,7 +19,10 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-async fn fetch_list(session: &Session, playlist_id: &str) -> Result<SelectedListContent, CoreError> {
+async fn fetch_list(
+    session: &Session,
+    playlist_id: &str,
+) -> Result<SelectedListContent, CoreError> {
     let bytes = session
         .spclient()
         .get_playlist(&parse_id(playlist_id)?)
@@ -142,7 +145,11 @@ fn encode_write_request(username: &str, uris: &[String], removed: bool) -> Vec<u
 }
 
 /// Add tracks to (or remove them from) Liked Songs.
-pub async fn set_liked(session: &Session, track_ids: &[String], liked: bool) -> Result<(), CoreError> {
+pub async fn set_liked(
+    session: &Session,
+    track_ids: &[String],
+    liked: bool,
+) -> Result<(), CoreError> {
     let uris: Vec<String> = track_ids
         .iter()
         .map(|id| format!("spotify:track:{id}"))
@@ -154,7 +161,12 @@ pub async fn set_liked(session: &Session, track_ids: &[String], liked: bool) -> 
     headers.insert(header::ACCEPT, ct);
     session
         .spclient()
-        .request(&Method::POST, "/collection/v2/write", Some(headers), Some(&body))
+        .request(
+            &Method::POST,
+            "/collection/v2/write",
+            Some(headers),
+            Some(&body),
+        )
         .await?;
     log::info!("liked={liked} for {} tracks", uris.len());
     Ok(())

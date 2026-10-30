@@ -1,6 +1,7 @@
 package com.rutger.fastify.ui.screens
 
 import android.text.Html
+import java.text.NumberFormat
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -32,6 +33,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,7 +52,10 @@ import coil3.compose.AsyncImage
 import com.rutger.fastify.container
 import com.rutger.fastify.ui.LocalNavigator
 
-private const val POPULAR_COLLAPSED = 5
+/** Popular tracks shown at first, and how many more each "Show more" adds. */
+private const val POPULAR_STEP = 5
+
+private val streamsFormat: NumberFormat = NumberFormat.getIntegerInstance()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +67,7 @@ fun ArtistScreen(artistId: String) {
     val playerState by c.player.state.collectAsStateWithLifecycle()
     val downloaded by c.downloads.trackIds.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf<TrackMenu?>(null) }
-    var showAllPopular by remember { mutableStateOf(false) }
+    var popularShown by remember { mutableIntStateOf(POPULAR_STEP) }
     val artist = state.data
 
     PullToRefreshBox(isRefreshing = state.refreshing && artist != null, onRefresh = vm::refresh, modifier = Modifier.fillMaxSize()) {
@@ -114,17 +119,26 @@ fun ArtistScreen(artistId: String) {
             }
             if (top.isNotEmpty()) {
                 item { SectionHeader("Popular") }
-                val shown = if (showAllPopular) top else top.take(POPULAR_COLLAPSED)
+                val shown = top.take(popularShown)
                 itemsIndexed(shown, key = { _, t -> "top" + t.id }) { i, t ->
                     TrackRow(
                         t, playing = playerState.current?.id == t.id, onClick = { c.player.play(top, i) },
                         downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, number = i + 1,
+                        subtitle = artist.playcounts[t.id]?.let { "${streamsFormat.format(it)} streams" },
+                        modifier = Modifier.animateItem(),
                     )
                 }
-                if (top.size > POPULAR_COLLAPSED) {
-                    item {
-                        TextButton(onClick = { showAllPopular = !showAllPopular }, modifier = Modifier.padding(horizontal = 8.dp)) {
-                            Text(if (showAllPopular) "Show less" else "See more")
+                if (top.size > POPULAR_STEP) {
+                    // "Show less" stays on the left, "Show more" (5 at a time) on the right.
+                    item(key = "popular_more") {
+                        Row(Modifier.fillMaxWidth().animateItem().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (popularShown > POPULAR_STEP) {
+                                TextButton(onClick = { popularShown = POPULAR_STEP }) { Text("Show less") }
+                            }
+                            Spacer(Modifier.weight(1f))
+                            if (popularShown < top.size) {
+                                TextButton(onClick = { popularShown = (popularShown + POPULAR_STEP).coerceAtMost(top.size) }) { Text("Show more") }
+                            }
                         }
                     }
                 }
