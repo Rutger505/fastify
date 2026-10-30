@@ -107,9 +107,11 @@ class PlaybackService : MediaSessionService() {
         if (timeline.isEmpty) return
         val ids = mutableListOf<String>()
         var index = player.currentMediaItemIndex
-        repeat(PREFETCH_AHEAD) {
+        if (index !in 0 until timeline.windowCount) return
+        for (i in 0 until PREFETCH_AHEAD) {
             index = timeline.getNextWindowIndex(index, player.repeatMode, player.shuffleModeEnabled)
-            if (index == C.INDEX_UNSET) return@repeat
+            // End of the queue: stop (passing INDEX_UNSET back in crashes the timeline).
+            if (index == C.INDEX_UNSET) break
             ids += player.getMediaItemAt(index).mediaId
         }
         container.prefetcher.prefetch(ids)

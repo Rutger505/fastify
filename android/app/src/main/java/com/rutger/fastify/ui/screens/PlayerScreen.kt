@@ -208,11 +208,14 @@ fun PlayerScreen(onClose: () -> Unit) {
                 Icon(Icons.Default.MoreVert, "More options")
             }
         }
-        Spacer(Modifier.weight(0.5f))
-        SwipeToSkip(player, Modifier.fillMaxWidth().aspectRatio(1f)) {
+        Spacer(Modifier.height(24.dp))
+        // Square art that shrinks on short screens so the controls and bottom bar always fit.
+        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+        SwipeToSkip(player, Modifier.aspectRatio(1f, matchHeightConstraintsFirst = true)) {
             Artwork(track?.imageUrl, 1000.dp, modifier = Modifier.fillMaxSize(), corner = 8.dp)
         }
-        Spacer(Modifier.height(28.dp))
+        }
+        Spacer(Modifier.height(24.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 // Title opens the album, artists open the artist, like Spotify.
@@ -289,7 +292,7 @@ fun PlayerScreen(onClose: () -> Unit) {
                 )
             }
         }
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(8.dp))
         // Bottom bar: lyrics left, queue right (Spotify puts the queue button down here too).
         Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { if (track != null) nav.openLyrics() }) { Icon(Icons.Default.Lyrics, "Lyrics") }
