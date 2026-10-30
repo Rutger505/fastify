@@ -82,8 +82,10 @@ fun TrackRow(
     downloaded: Boolean = false,
     onMore: (() -> Unit)? = null,
     number: Int? = null,
-    /** Second line instead of the artists (e.g. play count on artist pages). */
+    /** Second line instead of the artists. */
     subtitle: String? = null,
+    /** Short text right-aligned next to the more button (e.g. play count on artist pages). */
+    trailing: String? = null,
 ) {
     Row(
         modifier.fillMaxWidth().clickable(onClick = onClick)
@@ -114,6 +116,15 @@ fun TrackRow(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+        }
+        if (trailing != null) {
+            Text(
+                trailing,
+                maxLines = 1,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(start = 8.dp),
+            )
         }
         if (onMore != null) {
             IconButton(onClick = onMore) {

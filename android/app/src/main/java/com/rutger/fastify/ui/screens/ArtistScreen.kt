@@ -124,7 +124,7 @@ fun ArtistScreen(artistId: String) {
                     TrackRow(
                         t, playing = playerState.current?.id == t.id, onClick = { c.player.play(top, i, contextUri = "spotify:artist:$artistId") },
                         downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, number = i + 1,
-                        subtitle = artist.playcounts[t.id]?.let { "${streamsFormat.format(it)} streams" },
+                        trailing = artist.playcounts[t.id]?.let { streamsFormat.format(it) },
                         modifier = Modifier.animateItem(),
                     )
                 }
