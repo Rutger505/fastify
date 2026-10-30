@@ -7,6 +7,7 @@
 #
 #   emu up [--no-build]   lease + stop + build x86_64 debug + boot + install + launch + UI text
 #   emu down              stop the emulator and release the lease (always do this when done)
+#   EMU_QUICKBOOT=1       opt-in snapshot boot: down saves (1-3 min), start/up loads (~30s)
 #   emu status            lease holder, emulator state, other emulators/builds, memory
 #   emu build [debug|release]   Gradle build (stops our emulator first: both together OOM the VM)
 #   emu start | stop      boot (and wait) / shut down our emulator only
@@ -169,21 +170,22 @@ start() {
     local avail; avail=$(awk '/^(MemAvailable|SwapFree):/ {s += $2} END {print int(s / 1024)}' /proc/meminfo)
     [ "$avail" -ge "${EMU_MIN_FREE_MB:-3000}" ] || die "only ${avail} MB RAM+swap free, need ${EMU_MIN_FREE_MB:-3000}; not booting (see 'emu status')"
     systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
-    # Quickboot: load the snapshot saved by the last clean 'stop' (seconds instead of a ~1 min
-    # cold boot) and save a new one on exit. EMU_COLD_BOOT=1 forces a cold boot.
-    local snap=()
-    if [ -e "$CLEAN" ] && [ -z "${EMU_COLD_BOOT:-}" ] && [ -d "$SNAPSHOT_DIR" ]; then
+    # Quickboot is opt-in (EMU_QUICKBOOT=1 on start/up and down): it loads the snapshot saved
+    # by the last 'down' in ~30s instead of a 1-2 min cold boot, but saving takes 1-3 min, the
+    # snapshot needs ~1.2 GB disk, and loading makes all 2.5 GB guest RAM resident at once
+    # (filled the VM's swap in testing). Never auto-save on exit: 'build' stops the emulator too.
+    local snap=(-no-snapshot-save)
+    if [ -n "${EMU_QUICKBOOT:-}" ] && [ -e "$CLEAN" ] && [ -d "$SNAPSHOT_DIR" ]; then
       echo "quickboot from snapshot ($SNAPSHOT_DIR)"
     else
-      snap=(-no-snapshot-load)
-      echo "cold boot (no clean snapshot)"
+      snap+=(-no-snapshot-load)
+      [ -z "${EMU_QUICKBOOT:-}" ] || echo "cold boot (no clean snapshot)"
     fi
     rm -f "$CLEAN"
     # Never -wipe-data: the AVD holds the logged-in app data. RuntimeMaxSec is a safety net
     # so a forgotten emulator doesn't keep 2-3 GB forever.
     systemd-run --user --unit="$UNIT" --collect --quiet \
       -E ANDROID_HOME -E ANDROID_SDK_ROOT -E ANDROID_AVD_HOME \
-      -E ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL="${EMU_STOP_WAIT:-180}" \
       -p StandardOutput="truncate:$LOG" -p StandardError="truncate:$LOG" \
       -p MemoryHigh=2G -p OOMScoreAdjust=500 -p RuntimeMaxSec="${EMU_MAX_RUNTIME:-3h}" \
       "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -port "$PORT" -no-window -no-audio \
@@ -204,25 +206,24 @@ start() {
   echo "booted"
 }
 
-# 'adb emu kill' makes the emulator save the quickboot snapshot (RAM to disk) before exiting,
-# so give it time. Only a clean exit marks the snapshot usable for the next start.
+# stop [save]: with 'save' (only 'emu down') first write the quickboot snapshot, which takes
+# 1-3 min. Only a confirmed save marks it usable; any other stop means the next start cold boots.
 stop() {
   if running; then
-    local t0; t0=$(now)
-    if booted && timeout 10 adb emu kill >/dev/null 2>&1; then
-      for _ in $(seq 1 "${EMU_STOP_WAIT:-180}"); do running || break; sleep 1; done
+    if [ "${1:-}" = save ] && booted; then
+      local t0 out; t0=$(now)
+      echo "saving quickboot snapshot (1-3 min)..."
+      out="$(timeout "${EMU_STOP_WAIT:-300}" adb emu avd snapshot save default_boot 2>&1 | tr -d '\r')" || true
+      if grep -qx OK <<<"$out" && [ -s "$SNAPSHOT_DIR/ram.bin" ]; then
+        touch "$CLEAN"
+        echo "snapshot saved in $(( $(now) - t0 ))s ($(du -sh "$SNAPSHOT_DIR" | cut -f1), $SNAPSHOT_DIR)"
+      else
+        echo "emu: snapshot save failed, next start cold boots: $out" >&2
+      fi
     fi
-    if running; then
-      echo "emu: emulator did not exit cleanly, killing it; next start cold boots" >&2
-      systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
-    elif grep -q "Saving snapshot 'default_boot' took" "$LOG" && ! grep -qiE 'snapshot.*(fail|error|disabled)' "$LOG" \
-        && [ -s "$SNAPSHOT_DIR/ram.bin" ]; then
-      touch "$CLEAN"
-      echo "snapshot saved in $(( $(now) - t0 ))s ($(du -sh "$SNAPSHOT_DIR" | cut -f1), $SNAPSHOT_DIR)"
-    else
-      echo "emu: snapshot was not saved (see $LOG); next start cold boots" >&2
-      grep -iE 'snapshot' "$LOG" | tail -5 >&2 || true
-    fi
+    timeout 10 adb emu kill >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do running || break; sleep 1; done
+    systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
   fi
   echo "emulator stopped"
 }
@@ -315,9 +316,9 @@ status() {
     echo "emulator: stopped"
   fi
   if [ -e "$CLEAN" ]; then
-    echo "snapshot: clean, next start quickboots ($(du -sh "$SNAPSHOT_DIR" 2>/dev/null | cut -f1), $SNAPSHOT_DIR)"
+    echo "snapshot: clean, EMU_QUICKBOOT=1 start quickboots ($(du -sh "$SNAPSHOT_DIR" 2>/dev/null | cut -f1), $SNAPSHOT_DIR)"
   else
-    echo "snapshot: none or stale, next start cold boots"
+    echo "snapshot: none or stale (EMU_QUICKBOOT=1 down saves one)"
   fi
   f="$(foreign)"
   echo "other emulators/builds: ${f:-none}"
@@ -333,7 +334,7 @@ case "$cmd" in
     [ "${1:-}" = --no-build ] || build debug
     start; install; launch
     echo "sandbox up for '$EMU_OWNER'. When done: EMU_OWNER=$EMU_OWNER $0 down" ;;
-  down) acquire 0; stop; release; echo "lease released" ;;
+  down) acquire 0; if [ -n "${EMU_QUICKBOOT:-}" ]; then stop save; else stop; fi; release; echo "lease released" ;;
   build) acquire "$WAIT"; build "${1:-debug}" ;;
   start) acquire "$WAIT"; start ;;
   stop) acquire 0; stop ;;
