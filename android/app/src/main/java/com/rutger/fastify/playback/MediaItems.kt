@@ -13,10 +13,12 @@ const val TRACK_SCHEME = "fastify"
 private const val EXTRA_ARTIST_IDS = "fastify.artistIds"
 private const val EXTRA_ARTIST_NAMES = "fastify.artistNames"
 private const val EXTRA_ALBUM_ID = "fastify.albumId"
+private const val EXTRA_AUTOPLAY = "fastify.autoplay"
 
 fun trackUri(id: String): Uri = Uri.Builder().scheme(TRACK_SCHEME).authority("track").appendPath(id).build()
 
-fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
+/** `autoplay`: a recommendation appended after the queue ran out (shown under "Recommended"). */
+fun Track.toMediaItem(autoplay: Boolean = false): MediaItem = MediaItem.Builder()
     .setMediaId(id)
     .setUri(trackUri(id))
     .setMediaMetadata(
@@ -35,6 +37,7 @@ fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
                     putStringArrayList(EXTRA_ARTIST_IDS, ArrayList(artistRefs.map { it.id }))
                     putStringArrayList(EXTRA_ARTIST_NAMES, ArrayList(artistRefs.map { it.name }))
                     albumId?.let { putString(EXTRA_ALBUM_ID, it) }
+                    if (autoplay) putBoolean(EXTRA_AUTOPLAY, true)
                 },
             )
             .build(),
@@ -56,6 +59,8 @@ fun MediaItem.toTrack(): Track {
         albumId = extras?.getString(EXTRA_ALBUM_ID),
     )
 }
+
+val MediaItem.isAutoplay: Boolean get() = mediaMetadata.extras?.getBoolean(EXTRA_AUTOPLAY) == true
 
 /** Controllers strip the URI from media items; rebuild it from the media id. */
 fun MediaItem.withPlayableUri(): MediaItem =

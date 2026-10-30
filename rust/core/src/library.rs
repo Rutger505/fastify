@@ -2,10 +2,11 @@
 //! session. The public Web API answers 429 for tokens of the desktop client id, so nothing here
 //! touches api.spotify.com.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use http::{HeaderMap, HeaderValue, Method, header};
 use librespot_core::{Session, SpotifyId};
+use librespot_protocol::autoplay_context_request::AutoplayContextRequest;
 use librespot_protocol::extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery};
 use librespot_protocol::extension_kind::ExtensionKind;
 use librespot_protocol::metadata;
@@ -59,6 +60,8 @@ pub struct AlbumInfo {
 const IMAGE_BASE: &str = "https://i.scdn.co/image/";
 const METADATA_BATCH: usize = 100;
 const ROOTLIST_PAGE: usize = 500;
+/// Recently played tracks sent with an autoplay request (Spotify sends about this many).
+const AUTOPLAY_RECENT: usize = 50;
 
 pub(crate) fn image_url(file_id: &[u8]) -> Option<String> {
     (!file_id.is_empty()).then(|| format!("{IMAGE_BASE}{}", hex::encode(file_id)))
@@ -414,6 +417,77 @@ pub async fn search_tracks(session: &Session, query: &str) -> Result<Vec<TrackIn
         .collect();
     log::info!("search '{query}': {} track ids", ids.len());
     hydrate_tracks(session, &ids).await
+}
+
+/// Autoplay recommendations, the way the Spotify clients do it: `POST /context-resolve/v1/autoplay`
+/// with the finished context and the recently played tracks. Returns playable tracks that are
+/// not in `recent_ids`. Pages without tracks are resolved through their `page_url`.
+pub async fn autoplay(
+    session: &Session,
+    context_uri: &str,
+    recent_ids: &[String],
+) -> Result<Vec<TrackInfo>, CoreError> {
+    let mut req = AutoplayContextRequest::new();
+    req.set_context_uri(context_uri.to_owned());
+    let skip = recent_ids.len().saturating_sub(AUTOPLAY_RECENT);
+    req.recent_track_uri = recent_ids[skip..]
+        .iter()
+        .map(|id| format!("spotify:track:{id}"))
+        .collect();
+    let ctx = session.spclient().get_autoplay_context(&req).await?;
+
+    let mut uris: Vec<String> = Vec::new();
+    for page in &ctx.pages {
+        if !page.tracks.is_empty() {
+            uris.extend(page.tracks.iter().map(|t| t.uri().to_owned()));
+        } else if !page.page_url().is_empty() {
+            let body = session.spclient().get_next_page(page.page_url()).await?;
+            let json: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+                CoreError::Other { msg: format!("autoplay page {}: {e}", page.page_url()) }
+            })?;
+            collect_track_uris(&json, &mut uris);
+        }
+    }
+
+    let mut seen: HashSet<&str> = recent_ids.iter().map(String::as_str).collect();
+    let mut ids: Vec<String> = Vec::new();
+    for uri in &uris {
+        let Some(id) = id_from_uri(uri.split('?').next().unwrap_or(""), "track") else {
+            continue;
+        };
+        if seen.insert(id) {
+            ids.push(id.to_owned());
+        }
+    }
+    log::info!(
+        "autoplay {context_uri}: {} pages, {} uris, {} new tracks",
+        ctx.pages.len(),
+        uris.len(),
+        ids.len()
+    );
+    hydrate_tracks(session, &ids).await
+}
+
+/// All `tracks[].uri` values in a context(-page) JSON document.
+fn collect_track_uris(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Array(tracks)) = map.get("tracks") {
+                for t in tracks {
+                    if let Some(uri) = t.get("uri").and_then(|u| u.as_str()) {
+                        out.push(uri.to_owned());
+                    }
+                }
+            }
+            for (k, child) in map {
+                if k != "tracks" {
+                    collect_track_uris(child, out);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|i| collect_track_uris(i, out)),
+        _ => {}
+    }
 }
 
 fn percent_encode(word: &str) -> String {

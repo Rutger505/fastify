@@ -237,6 +237,19 @@ impl FastifyCore {
             .await
     }
 
+    /// Autoplay recommendations after `context_uri` (playlist/album/artist/collection/track uri)
+    /// ended. `recent_track_ids`: what was just played, oldest first; never returned.
+    pub async fn autoplay(
+        self: Arc<Self>,
+        context_uri: String,
+        recent_track_ids: Vec<String>,
+    ) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move {
+            library::autoplay(&s, &context_uri, &recent_track_ids).await
+        })
+        .await
+    }
+
     /// Artist page: top tracks, albums, singles, compilations, appears on.
     pub async fn artist(self: Arc<Self>, artist_id: String) -> Result<ArtistPage, CoreError> {
         self.with_session(|s| async move { catalog::artist(&s, &artist_id).await })

@@ -34,7 +34,7 @@ async fn main() {
         "run" => run(core).await,
         "raw" => {
             let path = args.get(3).expect("path");
-            match core.spclient_get(path.clone()).await {
+            match core.clone().spclient_get(path.clone()).await {
                 Ok(b) => println!("{} bytes\n{}", b.len(), String::from_utf8_lossy(&b)),
                 Err(e) => println!("ERR {e}"),
             }
@@ -89,6 +89,16 @@ async fn main() {
             Ok(t) => for x in t { println!("{} {} - {} album={:?} artists={:?}", x.id, x.title, x.artists, x.album_id, x.artist_refs.iter().map(|r| &r.id).collect::<Vec<_>>()) },
             Err(e) => println!("ERR {e}"),
         },
+        "autoplay" => {
+            let recent: Vec<String> = args[4..].to_vec();
+            match core.clone().autoplay(args[3].clone(), recent).await {
+                Ok(t) => {
+                    println!("{} tracks", t.len());
+                    for x in t { println!("{} {} - {}", x.id, x.title, x.artists) }
+                }
+                Err(e) => println!("ERR {e}"),
+            }
+        }
         _ => eprintln!("unknown command {cmd}"),
     }
 }

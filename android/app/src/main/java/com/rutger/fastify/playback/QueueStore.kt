@@ -12,6 +12,10 @@ data class SavedQueue(
     val positionMs: Long,
     val shuffle: Boolean = false,
     val repeatMode: Int = 0,
+    /** What the queue was started from (spotify:playlist:..., ...), seeds autoplay. */
+    val contextUri: String? = null,
+    /** Indices of autoplay recommendations in `tracks`. */
+    val autoplay: List<Int> = emptyList(),
 )
 
 /** Last queue + position, restored paused on launch so play is instant. */

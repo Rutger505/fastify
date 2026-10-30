@@ -2,11 +2,13 @@ package com.rutger.fastify.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.Bundle
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.rutger.fastify.data.Track
@@ -31,6 +33,8 @@ data class PlayerUiState(
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val queue: List<Track> = emptyList(),
     val index: Int = 0,
+    /** Queue index where autoplay recommendations start, -1 when there are none. */
+    val autoplayFrom: Int = -1,
     val error: String? = null,
 )
 
@@ -76,7 +80,9 @@ class PlayerConnection(private val context: Context) {
         _state.value = _state.value.copy(connected = false)
     }
 
-    fun play(tracks: List<Track>, startIndex: Int, shuffle: Boolean = false) = withController {
+    /** `contextUri`: what the tracks are (spotify:playlist:..., album, artist, collection), seeds autoplay. */
+    fun play(tracks: List<Track>, startIndex: Int, shuffle: Boolean = false, contextUri: String? = null) = withController {
+        setContext(contextUri)
         shuffleModeEnabled = shuffle
         setMediaItems(tracks.map { it.toMediaItem() }, if (shuffle) 0 else startIndex, 0)
         if (shuffle) seekTo(currentTimeline.getFirstWindowIndex(true).coerceAtLeast(0), 0)
@@ -105,7 +111,14 @@ class PlayerConnection(private val context: Context) {
         }
     }
 
-    fun stopAndClear() = withController { stop(); clearMediaItems() }
+    fun stopAndClear() = withController { setContext(null); stop(); clearMediaItems() }
+
+    private fun MediaController.setContext(uri: String?) {
+        sendCustomCommand(
+            SessionCommand(CMD_SET_CONTEXT, Bundle.EMPTY),
+            Bundle().apply { uri?.let { putString(ARG_CONTEXT_URI, it) } },
+        )
+    }
 
     // "Add to queue" items play after the current track, in the order they were added
     // (like Spotify). The offset resets once playback moves to another track.
@@ -146,6 +159,8 @@ class PlayerConnection(private val context: Context) {
     private fun refresh(full: Boolean) {
         val c = controller ?: return
         val queue = if (full) (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toTrack() } else _state.value.queue
+        val autoplayFrom = if (full) (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).isAutoplay } ?: -1
+        else _state.value.autoplayFrom
         _state.value = PlayerUiState(
             connected = true,
             current = c.currentMediaItem?.toTrack(),
@@ -157,6 +172,7 @@ class PlayerConnection(private val context: Context) {
             repeatMode = c.repeatMode,
             queue = queue,
             index = c.currentMediaItemIndex,
+            autoplayFrom = autoplayFrom,
             error = c.playerError?.let(::describe),
         )
     }

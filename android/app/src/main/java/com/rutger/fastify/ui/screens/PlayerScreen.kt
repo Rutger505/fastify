@@ -51,6 +51,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -354,9 +355,31 @@ fun PlayerScreen(onClose: () -> Unit) {
         FastifySheet(onDismiss = { showQueue = false }) {
             val listState = rememberLazyListState()
             LaunchedEffect(Unit) { listState.scrollToItem(state.index.coerceAtLeast(0)) }
+            val autoplay by c.settings.autoplay.collectAsStateWithLifecycle()
             SheetTitle("Queue")
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Autoplay", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Keep playing similar songs when the queue ends",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = autoplay, onCheckedChange = c.settings::setAutoplay)
+            }
             LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
                 itemsIndexed(state.queue, key = { i, t -> "$i-${t.id}" }) { i, t ->
+                    if (i == state.autoplayFrom) {
+                        Text(
+                            "Recommended",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                        )
+                    }
                     TrackRow(t, playing = i == state.index, onClick = { player.playQueueIndex(i) },
                         onMore = { menu = TrackMenu(t, queueIndex = i.takeIf { it != state.index }) })
                 }

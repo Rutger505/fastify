@@ -39,6 +39,13 @@ data class Collection(
 ) {
     val cacheKey: String get() = "${kind.name.lowercase()}_$id"
 
+    /** Spotify context uri (seeds autoplay). Liked Songs needs the username. */
+    fun contextUri(username: String?): String? = when (kind) {
+        CollectionKind.PLAYLIST -> "spotify:playlist:$id"
+        CollectionKind.ALBUM -> "spotify:album:$id"
+        CollectionKind.LIKED -> username?.let { "spotify:user:$it:collection" }
+    }
+
     companion object {
         val Liked = Collection(CollectionKind.LIKED, "liked", "Liked Songs", "Your favourites", null)
     }

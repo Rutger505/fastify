@@ -180,12 +180,12 @@ fun CollectionScreen(collection: Collection) {
                         )
                     }
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, 0, shuffle = true) }) {
+                    IconButton(onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, 0, shuffle = true, contextUri = collection.contextUri(c.username.value)) }) {
                         Icon(Icons.Default.Shuffle, "Shuffle")
                     }
                     Spacer(Modifier.width(4.dp))
                     FilledIconButton(
-                        onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, 0) },
+                        onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, 0, contextUri = collection.contextUri(c.username.value)) },
                         modifier = Modifier.size(56.dp),
                     ) { Icon(Icons.Default.PlayArrow, "Play", modifier = Modifier.size(32.dp)) }
                 }
@@ -213,7 +213,7 @@ fun CollectionScreen(collection: Collection) {
                 TrackRow(
                     t,
                     playing = playerState.current?.id == t.id,
-                    onClick = { c.player.play(shownTracks, shown.indexOf(row)) },
+                    onClick = { c.player.play(shownTracks, shown.indexOf(row), contextUri = collection.contextUri(c.username.value)) },
                     downloaded = t.id in downloadedIds,
                     onMore = { menu = TrackMenu(t, context = collection, occurrence = row.occurrence) },
                 )

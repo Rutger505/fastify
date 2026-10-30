@@ -6,6 +6,7 @@ import com.rutger.fastify.auth.AuthManager
 import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.data.Downloads
 import com.rutger.fastify.data.LibraryRepository
+import com.rutger.fastify.data.Settings
 import com.rutger.fastify.data.SnapshotStore
 import com.rutger.fastify.data.PlayHistory
 import com.rutger.fastify.playback.PlayerConnection
@@ -48,6 +49,7 @@ class AppContainer(val app: Application) {
     val prefetcher by lazy { Prefetcher(scope) { core } }
     val player by lazy { PlayerConnection(app) }
     val downloads by lazy { Downloads(app, scope, { core }, library) }
+    val settings by lazy { Settings(app) }
 
     private val sessionPrefs by lazy { app.getSharedPreferences("session", android.content.Context.MODE_PRIVATE) }
     private val _username by lazy { MutableStateFlow(sessionPrefs.getString("username", null)) }
