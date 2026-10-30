@@ -26,6 +26,13 @@ class Diagnostics(private val c: AppContainer) {
             onResult(r)
         }
 
+        probe("Notifications (media controls need these)") {
+            val nm = c.app.getSystemService(android.app.NotificationManager::class.java)
+            val perm = c.app.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            "permission=$perm enabled=${nm.areNotificationsEnabled()} channels=" +
+                nm.notificationChannels.joinToString { "${it.id}:${it.importance}" }
+        }
         probe("Librespot session") { c.core.username().also { user = it }.let { "user=$it" } }
         var firstPlaylist: String? = null
         probe("Playlists (rootlist)") {

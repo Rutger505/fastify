@@ -91,6 +91,9 @@ class PlayerConnection(private val context: Context) {
 
     fun next() = withController { seekToNext() }
     fun previous() = withController { seekToPrevious() }
+
+    /** Always the previous track (no restart-current-track rule), for the mini player swipe. */
+    fun previousTrack() = withController { seekToPreviousMediaItem() }
     fun seekTo(ms: Long) = withController { seekTo(ms) }
     fun playQueueIndex(index: Int) = withController { seekTo(index, 0); play() }
     fun toggleShuffle() = withController { shuffleModeEnabled = !shuffleModeEnabled }

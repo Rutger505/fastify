@@ -1,6 +1,7 @@
 package com.rutger.fastify.ui
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,17 +20,24 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val c = container
+        // Without this the media notification (and lock-screen controls) never shows. Also covers
+        // installs that were logged in before the permission was requested at login.
+        if (c.auth.isLoggedIn) requestNotificationPermission()
         setContent {
             FastifyTheme {
                 val loggedIn by c.auth.loggedIn.collectAsStateWithLifecycle()
                 if (loggedIn) {
                     FastifyNavHost()
                 } else {
-                    LoginScreen(onLoggedIn = {
-                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    })
+                    LoginScreen(onLoggedIn = ::requestNotificationPermission)
                 }
             }
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

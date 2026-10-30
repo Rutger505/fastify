@@ -1,7 +1,12 @@
 package com.rutger.fastify.ui.screens
 
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,11 +45,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,26 +64,31 @@ import com.rutger.fastify.container
 import com.rutger.fastify.playback.PlayerConnection
 import com.rutger.fastify.playback.PlayerUiState
 import com.rutger.fastify.ui.theme.Green
+import kotlin.math.abs
 
 @Composable
 fun MiniPlayer(state: PlayerUiState, player: PlayerConnection, onOpen: () -> Unit) {
     val track = state.current ?: return
+    // Spotify-style: swipe the track info left for next, right for previous; play/pause on the far right.
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
         Row(
-            Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(horizontal = 8.dp, vertical = 6.dp),
+            Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 8.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Artwork(track.imageUrl, 44.dp)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                Text(track.artists, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SwipeToSkip(player, Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Artwork(track.imageUrl, 44.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Text(track.artists, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
             IconButton(onClick = player::togglePlay) {
                 Icon(if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.isPlaying) "Pause" else "Play")
             }
-            IconButton(onClick = player::next) { Icon(Icons.Default.SkipNext, "Next") }
         }
         LinearProgressIndicator(
             progress = { if (state.durationMs > 0) state.positionMs.toFloat() / state.durationMs else 0f },
@@ -87,6 +101,51 @@ fun MiniPlayer(state: PlayerUiState, player: PlayerConnection, onOpen: () -> Uni
     }
 }
 
+private const val SWIPE_FRACTION = 0.3f
+private const val SWIPE_VELOCITY = 1500f
+private const val CLOSE_FRACTION = 0.25f
+
+/**
+ * Horizontal swipe on [content]: left = next track, right = previous track. The content follows
+ * the finger, flies out, and the new track slides in from the other side.
+ */
+@Composable
+fun SwipeToSkip(player: PlayerConnection, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    var drag by remember { mutableFloatStateOf(0f) }
+    var width by remember { mutableIntStateOf(1) }
+    Box(
+        modifier
+            .onSizeChanged { width = it.width.coerceAtLeast(1) }
+            .clipToBounds()
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = rememberDraggableState { drag += it },
+                onDragStopped = { velocity ->
+                    val w = width.toFloat()
+                    val dir = when {
+                        drag < -w * SWIPE_FRACTION || velocity < -SWIPE_VELOCITY -> -1
+                        drag > w * SWIPE_FRACTION || velocity > SWIPE_VELOCITY -> 1
+                        else -> 0
+                    }
+                    if (dir == 0) {
+                        animate(drag, 0f) { v, _ -> drag = v }
+                    } else {
+                        animate(drag, dir * w, animationSpec = tween(120)) { v, _ -> drag = v }
+                        if (dir < 0) player.next() else player.previousTrack()
+                        animate(-dir * w, 0f, animationSpec = tween(200)) { v, _ -> drag = v }
+                    }
+                },
+            ),
+    ) {
+        Box(
+            Modifier.graphicsLayer {
+                translationX = drag
+                alpha = 1f - (abs(drag) / width).coerceIn(0f, 1f) * 0.7f
+            },
+        ) { content() }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(onClose: () -> Unit) {
@@ -96,15 +155,36 @@ fun PlayerScreen(onClose: () -> Unit) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
     val track = state.current
+    // Drag the whole screen down to close it, like Spotify's now-playing view.
+    var dragY by remember { mutableFloatStateOf(0f) }
+    var height by remember { mutableIntStateOf(1) }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .onSizeChanged { height = it.height.coerceAtLeast(1) }
+            .graphicsLayer { translationY = dragY }
+            .draggable(
+                orientation = Orientation.Vertical,
+                state = rememberDraggableState { dragY = (dragY + it).coerceAtLeast(0f) },
+                onDragStopped = { velocity ->
+                    if (dragY > height * CLOSE_FRACTION || velocity > SWIPE_VELOCITY) {
+                        animate(dragY, height.toFloat(), animationSpec = tween(150)) { v, _ -> dragY = v }
+                        onClose()
+                    } else {
+                        animate(dragY, 0f) { v, _ -> dragY = v }
+                    }
+                },
+            )
+            .padding(horizontal = 24.dp),
+    ) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, "Close") }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { showQueue = true }) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue") }
         }
         Spacer(Modifier.weight(0.5f))
-        Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
+        SwipeToSkip(player, Modifier.fillMaxWidth().aspectRatio(1f)) {
             Artwork(track?.imageUrl, 1000.dp, modifier = Modifier.fillMaxSize(), corner = 8.dp)
         }
         Spacer(Modifier.height(28.dp))
