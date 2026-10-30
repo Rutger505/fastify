@@ -47,6 +47,11 @@ Gradle runs `rust/build-android.sh`, which builds `libfastify_core.so` with carg
 the Kotlin bindings with UniFFI. Set `FASTIFY_ABIS="arm64-v8a x86_64"` to also build for the
 emulator.
 
+On the OpenClaw VM, build and test in the headless emulator with `android/scripts/emu`
+(`EMU_OWNER=<id> scripts/emu up` … `scripts/emu down`). It holds a per-owner lease so
+parallel agent threads don't fight over the emulator, and it never touches other emulators.
+See the header of the script.
+
 `vergen` is pinned to 9.0.6 in `Cargo.lock`, because 9.1 breaks librespot-core 0.8's build script.
 
 ## MVP scope

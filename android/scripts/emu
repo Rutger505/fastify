@@ -1,44 +1,151 @@
 #!/usr/bin/env bash
-# Fastify emulator helper for the OpenClaw VM (headless, 6 GB RAM).
+# Fastify sandbox on the OpenClaw VM: build + headless emulator, safe with parallel agent threads.
 #
-#   emu start      boot the persistent AVD (logged-in app data survives) and wait for it
-#   emu stop       shut it down (do this before a Gradle build: both together OOM the VM)
-#   emu install    install the x86_64 debug APK (build: FASTIFY_ABIS=x86_64 ./gradlew assembleDebug)
-#   emu launch     force-stop + start the app, then 'emu ui'
-#   emu ui         screenshot (~/Temporary/fastify-screen.png) + visible texts
-#   emu logs       Fastify app logs since the last launch
-#   emu tap X Y    tap at screen coordinates (1080x1920)
+# Every command except status/help needs EMU_OWNER=<unique id of your thread>, e.g. the
+# OpenClaw session key. One owner holds the sandbox lease at a time; it expires after
+# EMU_LEASE_TTL seconds (default 2700) without a command, so a forgotten lease frees itself.
 #
-# The emulator runs as the transient systemd user unit 'fastify-emulator', so it is not
-# killed when the shell/exec that started it exits.
+#   emu up [--no-build]   lease + stop + build x86_64 debug + boot + install + launch + UI text
+#   emu down              stop the emulator and release the lease (always do this when done)
+#   emu status            lease holder, emulator state, other emulators/builds, memory
+#   emu build [debug|release]   Gradle build (stops our emulator first: both together OOM the VM)
+#   emu start | stop      boot (and wait) / shut down our emulator only
+#   emu install           install the x86_64 debug APK
+#   emu launch            force-stop + start the app, then 'emu ui'
+#   emu ui                screenshot (~/Temporary/fastify-screen.png) + focus + visible texts
+#   emu logs [N]          last N (200) Fastify/fastify-core/AndroidRuntime lines since launch
+#   emu tap X Y           tap screen coordinates (720x1280)
+#   emu tap "text" [n]    tap the n-th (1) node whose text/content-desc is exactly "text"
+#   emu swipe X1 Y1 X2 Y2 [ms] | emu key KEYCODE | emu type TEXT
+#
+# Safety: our emulator runs as systemd user unit 'fastify-emulator' on a fixed adb serial
+# (emulator-5584); every adb call is pinned to that serial and 'stop' only touches that unit.
+# Emulators/Gradle builds of other threads are never stopped: build/start wait for them
+# (EMU_WAIT seconds, default 600) and fail with a clear message if they don't finish.
 set -euo pipefail
 
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/share/android-sdk}"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.local/share/android/avd}"
+export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}"
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 
 AVD=Fastify_API35
 UNIT=fastify-emulator
+PORT=5584
+export ANDROID_SERIAL="emulator-$PORT"
 PKG=com.rutger.fastify
-LOG="$HOME/Temporary/fastify-emulator.log"
-SHOT="$HOME/Temporary/fastify-screen.png"
-APK="$(cd "$(dirname "$0")/.." && pwd)/app/build/outputs/apk/debug/app-debug.apk"
-mkdir -p "$HOME/Temporary"
+ANDROID_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+APK="$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk"
+TMP="$HOME/Temporary"
+LOG="$TMP/fastify-emulator.log"
+BUILD_LOG="$TMP/fastify-gradle.log"
+SHOT="$TMP/fastify-screen.png"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/fastify-emu"
+LEASE="$STATE/lease"
+LOCK="$STATE/lock"
+TTL="${EMU_LEASE_TTL:-2700}"
+WAIT="${EMU_WAIT:-600}"
+mkdir -p "$TMP" "$STATE"
 
-booted() { [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; }
+die() { echo "emu: $*" >&2; exit 1; }
+now() { date +%s; }
 
-ui_texts() {
-  adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || return 0
-  adb shell cat /sdcard/ui.xml | grep -oE '(text|content-desc)="[^"]+"' | sed -E 's/^[a-z-]+="(.*)"$/\1/' || true
+# ---------- lease (one owner at a time) ----------
+
+lease_read() {
+  L_OWNER=; L_EXP=0
+  if [ -s "$LEASE" ]; then read -r L_OWNER L_EXP <"$LEASE" || true; fi
 }
 
-# "System UI isn't responding" dialogs appear while the software-rendered emulator settles
-# after boot. Press "Wait" until none is shown.
+# acquire WAIT_SECONDS: take/refresh the lease for $EMU_OWNER, waiting for another owner's
+# lease to be released or to expire. Never steals a live lease.
+acquire() {
+  [ -n "${EMU_OWNER:-}" ] || die "set EMU_OWNER=<unique id of your thread/session> (see header of $0)"
+  [[ "$EMU_OWNER" =~ ^[^[:space:]]+$ ]] || die "EMU_OWNER must not contain whitespace"
+  local deadline=$(( $(now) + $1 )) told= t
+  while :; do
+    exec 9>"$LOCK"; flock 9
+    lease_read
+    t=$(now)
+    if [ -z "$L_OWNER" ] || [ "$L_OWNER" = "$EMU_OWNER" ] || [ "$L_EXP" -le "$t" ]; then
+      if [ -n "$L_OWNER" ] && [ "$L_OWNER" != "$EMU_OWNER" ]; then
+        echo "emu: taking over expired lease of '$L_OWNER'" >&2
+      fi
+      echo "$EMU_OWNER $(( t + TTL ))" >"$LEASE"
+      exec 9>&-
+      return 0
+    fi
+    exec 9>&-
+    [ "$t" -lt "$deadline" ] || die "sandbox is in use by '$L_OWNER' (lease expires in $(( L_EXP - t ))s). Do not stop or steal it; retry later or raise EMU_WAIT."
+    [ -n "$told" ] || { echo "emu: sandbox in use by '$L_OWNER', waiting up to $1s..." >&2; told=1; }
+    sleep 15
+  done
+}
+
+release() {
+  exec 9>"$LOCK"; flock 9
+  lease_read
+  if [ "$L_OWNER" = "${EMU_OWNER:-}" ]; then rm -f "$LEASE"; fi
+  exec 9>&-
+}
+
+# ---------- other threads' heavy processes ----------
+
+ours() { grep -q "/$UNIT.service" "/proc/$1/cgroup" 2>/dev/null; }
+
+# Emulators not in our unit, and running Gradle builds. We only build in the foreground of
+# this script and never while checking, so any running Gradle wrapper is someone else's.
+foreign() {
+  local p
+  for p in $(pgrep -f 'qemu-system|/emulator/emulator( |$)|GradleWrapperMain' || true); do
+    [ "$p" = $$ ] && continue
+    ours "$p" && continue
+    [ -r "/proc/$p/cmdline" ] || continue
+    echo "  pid $p: $(tr '\0' ' ' <"/proc/$p/cmdline" | cut -c1-140)"
+  done
+}
+
+# wait_quiet WHAT: wait until no foreign emulator/build runs (together they OOM the VM).
+wait_quiet() {
+  local deadline=$(( $(now) + WAIT )) f told=
+  while f="$(foreign)"; [ -n "$f" ]; do
+    [ "$(now)" -lt "$deadline" ] || die "not $1: another emulator/build is running (not ours, left alone):
+$f
+Retry when it is done or raise EMU_WAIT."
+    [ -n "$told" ] || { echo "emu: waiting up to ${WAIT}s for another thread's emulator/build before $1:" >&2; echo "$f" >&2; told=1; }
+    sleep 15
+  done
+}
+
+# ---------- emulator ----------
+
+# An adb server started from an exec dies when that exec ends (and with it every other thread's
+# adb connection), so run the shared server as its own user unit. If one is already running
+# outside the unit it is reused; the unit takes over once that one goes away.
+ensure_adb() {
+  systemctl --user is-active -q adb-server && return 0
+  systemctl --user reset-failed adb-server >/dev/null 2>&1 || true
+  systemd-run --user --unit=adb-server --collect --quiet     "$ANDROID_HOME/platform-tools/adb" nodaemon server >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5; do timeout 5 adb devices >/dev/null 2>&1 && return 0; sleep 1; done
+}
+
+running() { systemctl --user is-active -q "$UNIT"; }
+booted() { [ "$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; }
+
+# /data/local/tmp is owned by the shell user; /sdcard can refuse reads ("Permission denied").
+ui_xml() {
+  timeout 30 adb shell uiautomator dump /data/local/tmp/ui.xml >/dev/null 2>&1 || return 0
+  timeout 15 adb shell cat /data/local/tmp/ui.xml 2>/dev/null || true
+}
+focus() { timeout 15 adb shell dumpsys window 2>/dev/null | grep -m1 mCurrentFocus | sed 's/^ *//' || true; }
+ui_texts() { ui_xml | grep -oE '(text|content-desc)="[^"]+"' | sed -E 's/^[a-z-]+="(.*)"$/\1/' || true; }
+
+# "System UI isn't responding" dialogs show while the software-rendered emulator settles.
 dismiss_anr() {
   for _ in 1 2 3 4 5; do
-    ui_texts | grep -q "isn't responding" || return 0
-    echo "dismissing ANR dialog" >&2
+    { focus | grep -q "Not Responding"; } || { ui_texts | grep -q "isn't responding"; } || return 0
+    echo "emu: dismissing ANR dialog" >&2
     adb shell input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
     adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >/dev/null 2>&1 || true
     sleep 3
@@ -46,23 +153,31 @@ dismiss_anr() {
 }
 
 start() {
-  if systemctl --user is-active -q "$UNIT"; then
-    echo "already running"
+  if running; then
+    echo "emulator already running"
   else
-    test -c /dev/kvm || { echo "no /dev/kvm" >&2; exit 1; }
-    emulator -list-avds | grep -qx "$AVD" || { echo "AVD $AVD missing (see fastify skill)" >&2; exit 1; }
+    test -c /dev/kvm || die "no /dev/kvm"
+    emulator -list-avds | grep -qx "$AVD" || die "AVD $AVD missing (see fastify skill; it holds the login, don't recreate casually)"
+    if adb devices | grep -q "^$ANDROID_SERIAL"; then die "$ANDROID_SERIAL is used by an emulator outside unit $UNIT; not touching it"; fi
+    wait_quiet "booting the emulator"
+    # qemu needs ~2.5-3 GB (RAM + zram); below that the whole VM (incl. the gateway) thrashes.
+    local avail; avail=$(awk '/^(MemAvailable|SwapFree):/ {s += $2} END {print int(s / 1024)}' /proc/meminfo)
+    [ "$avail" -ge "${EMU_MIN_FREE_MB:-3000}" ] || die "only ${avail} MB RAM+swap free, need ${EMU_MIN_FREE_MB:-3000}; not booting (see 'emu status')"
     systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
-    # Never -wipe-data: the AVD holds the logged-in app data.
+    # Never -wipe-data: the AVD holds the logged-in app data. RuntimeMaxSec is a safety net
+    # so a forgotten emulator doesn't keep 2-3 GB forever.
     systemd-run --user --unit="$UNIT" --collect --quiet \
       -E ANDROID_HOME -E ANDROID_SDK_ROOT -E ANDROID_AVD_HOME \
       -p StandardOutput="file:$LOG" -p StandardError="file:$LOG" \
-      -p MemoryHigh=2G -p OOMScoreAdjust=500 \
-      "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -no-window -no-audio -no-boot-anim \
-      -no-snapshot -memory 1280 -cores 2 -gpu "${EMU_GPU:-guest}"
+      -p MemoryHigh=2G -p OOMScoreAdjust=500 -p RuntimeMaxSec="${EMU_MAX_RUNTIME:-3h}" \
+      "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -port "$PORT" -no-window -no-audio \
+      -no-boot-anim -no-snapshot -memory 1280 -cores 2 -gpu "${EMU_GPU:-guest}"
+    echo "emulator starting (unit $UNIT, $ANDROID_SERIAL)"
   fi
-  timeout 60 adb wait-for-device || { tail -40 "$LOG"; exit 1; }
-  for _ in $(seq 1 90); do booted && break; sleep 2; done
-  booted || { echo "boot did not complete in 180s" >&2; tail -40 "$LOG"; exit 1; }
+  timeout 120 adb wait-for-device || { tail -40 "$LOG"; die "device did not appear"; }
+  for _ in $(seq 1 120); do booted && break; running || break; sleep 2; done
+  running || { tail -40 "$LOG"; die "emulator died (OOM? journalctl --user -u $UNIT; sudo dmesg -T | grep -i oom)"; }
+  booted || { tail -40 "$LOG"; die "boot did not complete in time"; }
   for s in window_animation_scale transition_animation_scale animator_duration_scale; do
     adb shell settings put global "$s" 0
   done
@@ -74,33 +189,106 @@ start() {
 }
 
 stop() {
-  adb emu kill >/dev/null 2>&1 || true
-  for _ in $(seq 1 15); do systemctl --user is-active -q "$UNIT" || break; sleep 1; done
-  systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
-  echo "stopped"
+  if running; then
+    timeout 10 adb emu kill >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do running || break; sleep 1; done
+    systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
+  fi
+  echo "emulator stopped"
 }
+
+build() {
+  local variant="${1:-debug}" abis task apk
+  case "$variant" in
+    debug) abis=x86_64; task=assembleDebug; apk="$APK" ;;
+    release) abis=arm64-v8a; task=assembleRelease; apk="$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk" ;;
+    *) die "usage: emu build debug|release" ;;
+  esac
+  stop
+  wait_quiet "starting the Gradle build"
+  cd "$ANDROID_DIR"
+  echo "sdk.dir=$ANDROID_HOME" >local.properties
+  echo "building $variant ($abis), log: $BUILD_LOG (~1-2 min incremental, ~6 min clean)"
+  if ! FASTIFY_ABIS="$abis" ./gradlew --no-daemon "$task" >"$BUILD_LOG" 2>&1; then
+    grep -E '^e: |error(\[|:)|What went wrong' -A4 "$BUILD_LOG" | head -60 || true
+    tail -15 "$BUILD_LOG"
+    die "build failed (full log: $BUILD_LOG)"
+  fi
+  echo "built: $apk ($(stat -c '%s bytes, %y' "$apk"))"
+}
+
+install() { test -s "$APK" || die "no $APK (run: emu build)"; timeout 180 adb install -r "$APK"; }
 
 ui() {
   dismiss_anr
   adb exec-out screencap -p >"$SHOT"
   echo "screenshot: $SHOT"
-  echo "focus: $(adb shell dumpsys window | grep -m1 mCurrentFocus | sed 's/^ *//')"
+  echo "focus: $(focus)"
   echo "--- visible text ---"
   ui_texts
 }
 
-case "${1:-}" in
-  start) start ;;
-  stop) stop ;;
-  install) test -s "$APK" || { echo "no $APK" >&2; exit 1; }; adb install -r "$APK" ;;
-  launch)
-    adb shell am force-stop "$PKG"
-    adb logcat -c
-    adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-    sleep "${WAIT:-20}"
-    ui ;;
-  ui) ui ;;
-  logs) adb logcat -d | grep -E "Fastify/|fastify-core|AndroidRuntime" || true ;;
-  tap) adb shell input tap "$2" "$3" ;;
-  *) sed -n '2,12p' "$0"; exit 2 ;;
+launch() {
+  adb shell am force-stop "$PKG"
+  adb logcat -c
+  adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  sleep "${LAUNCH_WAIT:-20}"
+  ui
+  focus | grep -q "$PKG/" || die "app is not in the foreground after launch (see focus above + 'emu logs')"
+}
+
+tap() {
+  if [[ "${1:-}" =~ ^[0-9]+$ && "${2:-}" =~ ^[0-9]+$ ]]; then
+    adb shell input tap "$1" "$2"; echo "tapped $1,$2"; return
+  fi
+  local text="${1:?usage: emu tap X Y | emu tap TEXT [n]}" idx="${2:-1}" node b x1 y1 x2 y2
+  node="$(ui_xml | grep -oE '<node [^>]*>' | grep -F -e "text=\"$text\"" -e "content-desc=\"$text\"" | sed -n "${idx}p")"
+  [ -n "$node" ] || die "no node with text/content-desc \"$text\" (#$idx); see 'emu ui'"
+  b="$(grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' <<<"$node")"
+  read -r x1 y1 x2 y2 < <(grep -oE '[0-9]+' <<<"$b" | tr '\n' ' '; echo)
+  adb shell input tap $(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 ))
+  echo "tapped \"$text\" at $(( (x1 + x2) / 2 )),$(( (y1 + y2) / 2 ))"
+}
+
+status() {
+  local t f
+  lease_read
+  t=$(now)
+  if [ -n "$L_OWNER" ] && [ "$L_EXP" -gt "$t" ]; then
+    echo "lease: '$L_OWNER' (expires in $(( L_EXP - t ))s)"
+  else
+    echo "lease: free${L_OWNER:+ (expired, was '$L_OWNER')}"
+  fi
+  if running; then
+    echo "emulator: running ($ANDROID_SERIAL, $(booted && echo booted || echo booting))"
+  else
+    echo "emulator: stopped"
+  fi
+  f="$(foreign)"
+  echo "other emulators/builds: ${f:-none}"
+  free -m | sed -n '1,3p'
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in status|help|"") ;; *) ensure_adb ;; esac
+case "$cmd" in
+  status) status ;;
+  up)
+    acquire "$WAIT"
+    [ "${1:-}" = --no-build ] || build debug
+    start; install; launch
+    echo "sandbox up for '$EMU_OWNER'. When done: EMU_OWNER=$EMU_OWNER $0 down" ;;
+  down) acquire 0; stop; release; echo "lease released" ;;
+  build) acquire "$WAIT"; build "${1:-debug}" ;;
+  start) acquire "$WAIT"; start ;;
+  stop) acquire 0; stop ;;
+  install) acquire 0; install ;;
+  launch) acquire 0; launch ;;
+  ui) acquire 0; ui ;;
+  logs) acquire 0; adb logcat -d | grep -E "Fastify/|fastify-core|AndroidRuntime" | tail -n "${1:-200}" || true ;;
+  tap) acquire 0; tap "$@" ;;
+  swipe) acquire 0; adb shell input swipe "$1" "$2" "$3" "$4" "${5:-300}" ;;
+  key) acquire 0; adb shell input keyevent "$1" ;;
+  type) acquire 0; adb shell input text "$1" ;;
+  *) sed -n '2,24p' "$0"; if [ -n "$cmd" ] && [ "$cmd" != help ]; then exit 2; fi ;;
 esac
