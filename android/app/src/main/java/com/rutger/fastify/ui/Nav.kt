@@ -83,7 +83,8 @@ class Navigator(private val nav: NavHostController) {
 val LocalNavigator = staticCompositionLocalOf<Navigator> { error("no Navigator") }
 
 // Screen transitions: pages slide in from the right and back out to the right (the page below
-// moves along), the player and lyrics slide up from the bottom and back down. No scaling/fading.
+// moves along), the player and lyrics slide up from the bottom and back down. No scaling/fading,
+// also not for predictive back (system back gesture/button).
 private const val NAV_MS = 300
 private val slideSpec = tween<IntOffset>(NAV_MS)
 /** Keeps the page under the player in place (and visible) while the player slides over it. */
@@ -152,6 +153,10 @@ fun FastifyNavHost() {
                 exitTransition = { exit() },
                 popEnterTransition = { popEnter() },
                 popExitTransition = { popExit() },
+                // Back gestures/back button go through the predictive path, whose defaults scale the
+                // page down to 70% towards the center. Use the same slides as a normal pop.
+                predictivePopEnterTransition = { popEnter() },
+                predictivePopExitTransition = { popExit() },
             ) {
                 composable("home") { HomeScreen() }
                 composable("diagnostics") { DiagnosticsScreen(onBack = { nav.popBackStack() }) }

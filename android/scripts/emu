@@ -44,6 +44,11 @@ SHOT="$TMP/fastify-screen.png"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/fastify-emu"
 LEASE="$STATE/lease"
 LOCK="$STATE/lock"
+# Present only while the quickboot snapshot matches the disk: written after a clean save on
+# 'stop', removed on 'start'. Without it (crash, OOM kill, timeout) we cold boot instead,
+# because loading the old snapshot would roll the userdata disk back to that moment.
+CLEAN="$STATE/snapshot-clean"
+SNAPSHOT_DIR="$ANDROID_AVD_HOME/$AVD.avd/snapshots/default_boot"
 TTL="${EMU_LEASE_TTL:-2700}"
 WAIT="${EMU_WAIT:-600}"
 mkdir -p "$TMP" "$STATE"
@@ -164,14 +169,25 @@ start() {
     local avail; avail=$(awk '/^(MemAvailable|SwapFree):/ {s += $2} END {print int(s / 1024)}' /proc/meminfo)
     [ "$avail" -ge "${EMU_MIN_FREE_MB:-3000}" ] || die "only ${avail} MB RAM+swap free, need ${EMU_MIN_FREE_MB:-3000}; not booting (see 'emu status')"
     systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
+    # Quickboot: load the snapshot saved by the last clean 'stop' (seconds instead of a ~1 min
+    # cold boot) and save a new one on exit. EMU_COLD_BOOT=1 forces a cold boot.
+    local snap=()
+    if [ -e "$CLEAN" ] && [ -z "${EMU_COLD_BOOT:-}" ] && [ -d "$SNAPSHOT_DIR" ]; then
+      echo "quickboot from snapshot ($SNAPSHOT_DIR)"
+    else
+      snap=(-no-snapshot-load)
+      echo "cold boot (no clean snapshot)"
+    fi
+    rm -f "$CLEAN"
     # Never -wipe-data: the AVD holds the logged-in app data. RuntimeMaxSec is a safety net
     # so a forgotten emulator doesn't keep 2-3 GB forever.
     systemd-run --user --unit="$UNIT" --collect --quiet \
       -E ANDROID_HOME -E ANDROID_SDK_ROOT -E ANDROID_AVD_HOME \
-      -p StandardOutput="file:$LOG" -p StandardError="file:$LOG" \
+      -E ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL="${EMU_STOP_WAIT:-180}" \
+      -p StandardOutput="truncate:$LOG" -p StandardError="truncate:$LOG" \
       -p MemoryHigh=2G -p OOMScoreAdjust=500 -p RuntimeMaxSec="${EMU_MAX_RUNTIME:-3h}" \
       "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -port "$PORT" -no-window -no-audio \
-      -no-boot-anim -no-snapshot -memory 1280 -cores 2 -gpu "${EMU_GPU:-guest}"
+      -no-boot-anim "${snap[@]}" -memory 1280 -cores 2 -gpu "${EMU_GPU:-guest}"
     echo "emulator starting (unit $UNIT, $ANDROID_SERIAL)"
   fi
   timeout 120 adb wait-for-device || { tail -40 "$LOG"; die "device did not appear"; }
@@ -188,11 +204,25 @@ start() {
   echo "booted"
 }
 
+# 'adb emu kill' makes the emulator save the quickboot snapshot (RAM to disk) before exiting,
+# so give it time. Only a clean exit marks the snapshot usable for the next start.
 stop() {
   if running; then
-    timeout 10 adb emu kill >/dev/null 2>&1 || true
-    for _ in $(seq 1 20); do running || break; sleep 1; done
-    systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
+    local t0; t0=$(now)
+    if booted && timeout 10 adb emu kill >/dev/null 2>&1; then
+      for _ in $(seq 1 "${EMU_STOP_WAIT:-180}"); do running || break; sleep 1; done
+    fi
+    if running; then
+      echo "emu: emulator did not exit cleanly, killing it; next start cold boots" >&2
+      systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
+    elif grep -q "Saving snapshot 'default_boot' took" "$LOG" && ! grep -qiE 'snapshot.*(fail|error|disabled)' "$LOG" \
+        && [ -s "$SNAPSHOT_DIR/ram.bin" ]; then
+      touch "$CLEAN"
+      echo "snapshot saved in $(( $(now) - t0 ))s ($(du -sh "$SNAPSHOT_DIR" | cut -f1), $SNAPSHOT_DIR)"
+    else
+      echo "emu: snapshot was not saved (see $LOG); next start cold boots" >&2
+      grep -iE 'snapshot' "$LOG" | tail -5 >&2 || true
+    fi
   fi
   echo "emulator stopped"
 }
@@ -283,6 +313,11 @@ status() {
     echo "emulator: running ($ANDROID_SERIAL, $(booted && echo booted || echo booting))"
   else
     echo "emulator: stopped"
+  fi
+  if [ -e "$CLEAN" ]; then
+    echo "snapshot: clean, next start quickboots ($(du -sh "$SNAPSHOT_DIR" 2>/dev/null | cut -f1), $SNAPSHOT_DIR)"
+  else
+    echo "snapshot: none or stale, next start cold boots"
   fi
   f="$(foreign)"
   echo "other emulators/builds: ${f:-none}"
