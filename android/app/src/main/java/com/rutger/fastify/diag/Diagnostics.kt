@@ -48,6 +48,14 @@ class Diagnostics(private val c: AppContainer) {
         probe("Search (context-resolve)") {
             c.core.searchTracks("daft punk").let { "${it.size} tracks: " + it.take(3).joinToString { t -> t.title } }
         }
+        probe("New releases (followed artists)") {
+            c.core.newReleases(60u).let { "${it.size} releases, newest: " + it.take(3).joinToString { a -> "${a.name} (${a.releaseDate})" } }
+        }
+        probe("Downloads") {
+            val pinned = c.downloads.collections.value
+            "${pinned.size} collections, ${c.core.downloadedTracks().size} tracks, ${c.core.downloadsSize() / 1_048_576u} MB, " +
+                "${c.downloads.active.value} in progress: " + pinned.joinToString { it.title }
+        }
         probe("Web API /me (OAuth token, expected 429)") { webApi("/me", c.auth.token()) }
         return results
     }

@@ -15,6 +15,12 @@ use protobuf::{EnumOrUnknown, Message};
 use crate::CoreError;
 
 #[derive(uniffi::Record, Clone)]
+pub struct ArtistRef {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(uniffi::Record, Clone)]
 pub struct TrackInfo {
     pub id: String,
     pub title: String,
@@ -22,6 +28,9 @@ pub struct TrackInfo {
     pub album: String,
     pub image_url: Option<String>,
     pub duration_ms: u64,
+    /// Artists with ids, for "Go to artist". Same order as `artists`.
+    pub artist_refs: Vec<ArtistRef>,
+    pub album_id: Option<String>,
 }
 
 #[derive(uniffi::Record, Clone)]
@@ -39,18 +48,24 @@ pub struct AlbumInfo {
     pub name: String,
     pub artists: String,
     pub image_url: Option<String>,
+    pub artist_refs: Vec<ArtistRef>,
+    pub year: Option<i32>,
+    /// "album", "single", "ep", "compilation" (lowercase), empty when unknown.
+    pub album_type: String,
+    /// "YYYY-MM-DD" (month/day 01 when unknown), for sorting new releases.
+    pub release_date: Option<String>,
 }
 
 const IMAGE_BASE: &str = "https://i.scdn.co/image/";
 const METADATA_BATCH: usize = 100;
 const ROOTLIST_PAGE: usize = 500;
 
-fn image_url(file_id: &[u8]) -> Option<String> {
+pub(crate) fn image_url(file_id: &[u8]) -> Option<String> {
     (!file_id.is_empty()).then(|| format!("{IMAGE_BASE}{}", hex::encode(file_id)))
 }
 
 /// Prefer LARGE (640px), then the widest image.
-fn best_image(images: &[metadata::Image]) -> Option<String> {
+pub(crate) fn best_image(images: &[metadata::Image]) -> Option<String> {
     let large = images
         .iter()
         .find(|i| i.size.map(|s| s.value()) == Some(metadata::image::Size::LARGE as i32));
@@ -63,6 +78,50 @@ fn album_image(album: &metadata::Album) -> Option<String> {
     best_image(&album.cover_group.image).or_else(|| best_image(&album.cover))
 }
 
+pub(crate) fn artist_refs(artists: &[metadata::Artist]) -> Vec<ArtistRef> {
+    artists
+        .iter()
+        .filter_map(|a| {
+            Some(ArtistRef {
+                id: base62(a.gid())?,
+                name: a.name().to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn album_type(album: &metadata::Album) -> String {
+    use metadata::album::Type;
+    match album.type_.and_then(|t| t.enum_value().ok()) {
+        Some(Type::ALBUM) => "album",
+        Some(Type::SINGLE) => "single",
+        Some(Type::EP) => "ep",
+        Some(Type::COMPILATION) => "compilation",
+        _ => "",
+    }
+    .to_owned()
+}
+
+pub(crate) fn album_info(id: String, a: &metadata::Album) -> AlbumInfo {
+    AlbumInfo {
+        id,
+        name: a.name().to_owned(),
+        artists: artist_names(&a.artist),
+        image_url: album_image(a),
+        artist_refs: artist_refs(&a.artist),
+        year: a.date.as_ref().map(|d| d.year()).filter(|y| *y > 0),
+        album_type: album_type(a),
+        release_date: a.date.as_ref().filter(|d| d.year() > 0).map(|d| {
+            format!(
+                "{:04}-{:02}-{:02}",
+                d.year(),
+                d.month().max(1),
+                d.day().max(1)
+            )
+        }),
+    }
+}
+
 fn artist_names(artists: &[metadata::Artist]) -> String {
     artists
         .iter()
@@ -71,11 +130,11 @@ fn artist_names(artists: &[metadata::Artist]) -> String {
         .join(", ")
 }
 
-fn base62(gid: &[u8]) -> Option<String> {
+pub(crate) fn base62(gid: &[u8]) -> Option<String> {
     SpotifyId::from_raw(gid).ok()?.to_base62().ok()
 }
 
-fn id_from_uri<'a>(uri: &'a str, kind: &str) -> Option<&'a str> {
+pub(crate) fn id_from_uri<'a>(uri: &'a str, kind: &str) -> Option<&'a str> {
     let rest = uri
         .strip_prefix("spotify:")?
         .strip_prefix(kind)?
@@ -83,14 +142,14 @@ fn id_from_uri<'a>(uri: &'a str, kind: &str) -> Option<&'a str> {
     (!rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())).then_some(rest)
 }
 
-fn parse_id(id: &str) -> Result<SpotifyId, CoreError> {
+pub(crate) fn parse_id(id: &str) -> Result<SpotifyId, CoreError> {
     SpotifyId::from_base62(id).map_err(|_| CoreError::NotFound {
         msg: format!("invalid id {id}"),
     })
 }
 
 /// Batched extended metadata; returns raw protobuf payloads keyed by entity uri.
-async fn extended(
+pub(crate) async fn extended(
     session: &Session,
     uris: &[String],
     kind: ExtensionKind,
@@ -145,13 +204,18 @@ pub async fn hydrate_tracks(
             album: t.album.name().to_owned(),
             image_url: album_image(&t.album),
             duration_ms: t.duration().max(0) as u64,
+            artist_refs: artist_refs(&t.artist),
+            album_id: base62(t.album.gid()),
         });
     }
     log::info!("hydrated {}/{} tracks", out.len(), ids.len());
     Ok(out)
 }
 
-async fn hydrate_albums(session: &Session, ids: &[String]) -> Result<Vec<AlbumInfo>, CoreError> {
+pub(crate) async fn hydrate_albums(
+    session: &Session,
+    ids: &[String],
+) -> Result<Vec<AlbumInfo>, CoreError> {
     let uris: Vec<String> = ids.iter().map(|id| format!("spotify:album:{id}")).collect();
     let data = extended(session, &uris, ExtensionKind::ALBUM_V4).await?;
     Ok(ids
@@ -159,12 +223,7 @@ async fn hydrate_albums(session: &Session, ids: &[String]) -> Result<Vec<AlbumIn
         .zip(&uris)
         .filter_map(|(id, uri)| {
             let a = metadata::Album::parse_from_bytes(data.get(uri)?).ok()?;
-            Some(AlbumInfo {
-                id: id.clone(),
-                name: a.name().to_owned(),
-                artists: artist_names(&a.artist),
-                image_url: album_image(&a),
-            })
+            Some(album_info(id.clone(), &a))
         })
         .collect())
 }
@@ -263,11 +322,16 @@ pub async fn album_tracks(session: &Session, id: &str) -> Result<Vec<TrackInfo>,
 /// Liked songs and saved albums share the "collection" set. The server's page order is not
 /// chronological, so items are sorted by `added_at`, most recently added first.
 async fn collection(session: &Session) -> Result<Vec<String>, CoreError> {
+    collection_set(session, "collection").await
+}
+
+/// Any collection2 set: "collection" (liked songs + saved albums), "artist" (followed artists).
+pub(crate) async fn collection_set(session: &Session, set: &str) -> Result<Vec<String>, CoreError> {
     let username = session.username();
     let mut uris = Vec::new();
     let mut token = String::new();
     for _ in 0..200 {
-        let body = encode_page_request(&username, "collection", &token, 300);
+        let body = encode_page_request(&username, set, &token, 300);
         let mut headers = HeaderMap::new();
         let ct = HeaderValue::from_static("application/vnd.collection-v2.spotify.proto");
         headers.insert(header::CONTENT_TYPE, ct.clone());
@@ -288,7 +352,7 @@ async fn collection(session: &Session) -> Result<Vec<String>, CoreError> {
         }
         token = next;
     }
-    log::info!("collection: {} items", uris.len());
+    log::info!("collection {set}: {} items", uris.len());
     // Stable sort: items with equal timestamps keep the server order.
     uris.sort_by(|a, b| b.added_at.cmp(&a.added_at));
     Ok(uris.into_iter().map(|i| i.uri).collect())
@@ -366,7 +430,7 @@ fn percent_encode(word: &str) -> String {
 
 // ---- collection2v2 wire format (not compiled by librespot-protocol) ----
 
-fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         buf.push((v as u8) | 0x80);
         v >>= 7;
@@ -374,7 +438,7 @@ fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
     buf.push(v as u8);
 }
 
-fn put_str(buf: &mut Vec<u8>, field: u32, s: &str) {
+pub(crate) fn put_str(buf: &mut Vec<u8>, field: u32, s: &str) {
     if s.is_empty() {
         return;
     }

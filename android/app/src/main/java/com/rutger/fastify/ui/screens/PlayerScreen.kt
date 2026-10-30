@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,7 +25,12 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -38,7 +44,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -56,6 +61,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -63,7 +69,11 @@ import androidx.media3.common.Player
 import com.rutger.fastify.container
 import com.rutger.fastify.playback.PlayerConnection
 import com.rutger.fastify.playback.PlayerUiState
+import com.rutger.fastify.ui.LocalNavigator
 import com.rutger.fastify.ui.theme.Green
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 @Composable
@@ -149,9 +159,14 @@ fun SwipeToSkip(player: PlayerConnection, modifier: Modifier = Modifier, content
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(onClose: () -> Unit) {
-    val player = LocalContext.current.container.player
+    val c = LocalContext.current.container
+    val player = c.player
+    val nav = LocalNavigator.current
     val state by player.state.collectAsStateWithLifecycle()
+    val likedIds by c.library.likedIds.collectAsStateWithLifecycle()
     var showQueue by remember { mutableStateOf(false) }
+    var showArtists by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf<TrackMenu?>(null) }
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
     val track = state.current
@@ -180,18 +195,51 @@ fun PlayerScreen(onClose: () -> Unit) {
     ) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, "Close") }
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { showQueue = true }) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue") }
+            Text(
+                track?.album.orEmpty(),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = { track?.let { menu = TrackMenu(it, inPlayer = true) } }) {
+                Icon(Icons.Default.MoreVert, "More options")
+            }
         }
         Spacer(Modifier.weight(0.5f))
         SwipeToSkip(player, Modifier.fillMaxWidth().aspectRatio(1f)) {
             Artwork(track?.imageUrl, 1000.dp, modifier = Modifier.fillMaxSize(), corner = 8.dp)
         }
         Spacer(Modifier.height(28.dp))
-        Text(track?.title.orEmpty(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(track?.artists.orEmpty(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                // Title opens the album, artists open the artist, like Spotify.
+                Text(track?.title.orEmpty(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable(enabled = track?.albumId != null) { track?.albumCollection()?.let(nav::openCollection) })
+                Text(track?.artists.orEmpty(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable(enabled = !track?.artistRefs.isNullOrEmpty()) {
+                        val refs = track?.artistRefs.orEmpty()
+                        if (refs.size == 1) nav.openArtist(refs[0].id) else showArtists = true
+                    })
+            }
+            if (track != null) {
+                val liked = likedIds?.contains(track.id) == true
+                IconButton(onClick = {
+                    c.scope.launch {
+                        runCatching { c.library.setLiked(track, !liked) }
+                            .onFailure { e -> withContext(Dispatchers.Main) { c.app.toast("Like failed: ${e.message}") } }
+                    }
+                }) {
+                    Icon(if (liked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        if (liked) "Remove from Liked Songs" else "Add to Liked Songs",
+                        tint = if (liked) Green else MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        }
         Spacer(Modifier.height(12.dp))
 
         val duration = state.durationMs.coerceAtLeast(1)
@@ -242,19 +290,39 @@ fun PlayerScreen(onClose: () -> Unit) {
             }
         }
         Spacer(Modifier.weight(1f))
+        // Bottom bar: lyrics left, queue right (Spotify puts the queue button down here too).
+        Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { if (track != null) nav.openLyrics() }) { Icon(Icons.Default.Lyrics, "Lyrics") }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { showQueue = true }) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue") }
+        }
     }
 
     if (showQueue) {
-        ModalBottomSheet(onDismissRequest = { showQueue = false }) {
+        FastifySheet(onDismiss = { showQueue = false }) {
             val listState = rememberLazyListState()
             LaunchedEffect(Unit) { listState.scrollToItem(state.index.coerceAtLeast(0)) }
-            Text("Queue", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-            LazyColumn(state = listState) {
+            SheetTitle("Queue")
+            LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
                 itemsIndexed(state.queue, key = { i, t -> "$i-${t.id}" }) { i, t ->
-                    TrackRow(t, playing = i == state.index, onClick = { player.playQueueIndex(i) })
+                    TrackRow(t, playing = i == state.index, onClick = { player.playQueueIndex(i) },
+                        onMore = { menu = TrackMenu(t, queueIndex = i.takeIf { it != state.index }) })
                 }
             }
         }
     }
+
+    if (showArtists && track != null) {
+        FastifySheet(onDismiss = { showArtists = false }) {
+            SheetTitle("Artists")
+            track.artistRefs.forEach { a ->
+                MenuItem(Icons.Default.Person, a.name) {
+                    showArtists = false
+                    nav.openArtist(a.id)
+                }
+            }
+        }
+    }
+
+    menu?.let { TrackMenuSheet(it, onDismiss = { menu = null }) }
 }

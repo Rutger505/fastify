@@ -3,6 +3,9 @@
 //!   fastify-probe <data-dir> login     # OAuth; prints the URL, waits on 127.0.0.1:8898
 //!   fastify-probe <data-dir> run       # every library call the app makes
 //!   fastify-probe <data-dir> raw <path>  # raw spclient GET
+//!   fastify-probe <data-dir> artist|album|lyrics <id>
+//!   fastify-probe <data-dir> pladd <playlist> <track> | plrm <playlist> <track> <occurrence>
+//!   fastify-probe <data-dir> like|unlike <track> | download <track>
 //!
 //! The OAuth redirect goes to 127.0.0.1:8898 on this machine. When logging in from another
 //! device, copy the failed redirect URL and replay it here: `curl '<url>'`.
@@ -36,6 +39,56 @@ async fn main() {
                 Err(e) => println!("ERR {e}"),
             }
         }
+        "artist" => {
+            let id = args.get(3).expect("artist id").clone();
+            match core.clone().artist(id).await {
+                Ok(a) => {
+                    println!("{} img={:?}", a.name, a.image_url);
+                    println!("bio: {:?}", a.biography.map(|b| b.chars().take(120).collect::<String>()));
+                    println!("top: {}", tracks(&a.top_tracks));
+                    for (name, list) in [("albums", &a.albums), ("singles", &a.singles), ("compilations", &a.compilations), ("appears_on", &a.appears_on)] {
+                        println!("{name} ({}): {:?}", list.len(), list.iter().take(5).map(|x| format!("{} [{} {:?}]", x.name, x.album_type, x.year)).collect::<Vec<_>>());
+                    }
+                }
+                Err(e) => println!("ERR {e}"),
+            }
+        }
+        "album" => match core.clone().album(args.get(3).expect("album id").clone()).await {
+            Ok(a) => println!("{} by {:?} {:?} {}: {}", a.album.name, a.album.artist_refs.iter().map(|r| (&r.name, &r.id)).collect::<Vec<_>>(), a.album.year, a.album.album_type, tracks(&a.tracks)),
+            Err(e) => println!("ERR {e}"),
+        },
+        "lyrics" => match core.clone().lyrics(args.get(3).expect("track id").clone()).await {
+            Ok(Some(l)) => println!("synced={} provider={} {} lines: {:?}", l.synced, l.provider, l.lines.len(), l.lines.iter().take(4).map(|x| (x.start_ms, x.words.clone())).collect::<Vec<_>>()),
+            Ok(None) => println!("no lyrics"),
+            Err(e) => println!("ERR {e}"),
+        },
+        "pladd" => println!("{:?}", core.clone().playlist_add(args[3].clone(), vec![args[4].clone()]).await.map_err(|e| e.to_string())),
+        "plrm" => println!("{:?}", core.clone().playlist_remove(args[3].clone(), args[4].clone(), args[5].parse().unwrap()).await.map_err(|e| e.to_string())),
+        "like" | "unlike" => println!("{:?}", core.clone().set_liked(vec![args[3].clone()], cmd == "like").await.map_err(|e| e.to_string())),
+        "download" => {
+            let t = Instant::now();
+            let r = core.clone().download(args[3].clone()).await.map_err(|e| e.to_string());
+            println!("{r:?} in {} ms; downloaded={} all={:?} size={}", t.elapsed().as_millis(), core.is_track_downloaded(args[3].clone()), core.downloaded_tracks(), core.downloads_size());
+        }
+        "new" => {
+            let t = Instant::now();
+            match core.clone().new_releases(60).await {
+                Ok(a) => { println!("{} releases in {} ms", a.len(), t.elapsed().as_millis()); for x in a.iter().take(15) { println!("{:?} {} - {} [{}]", x.release_date, x.name, x.artists, x.album_type) } }
+                Err(e) => println!("ERR {e}"),
+            }
+        }
+        "isliked" => match core.clone().liked_tracks().await {
+            Ok(t) => println!("liked={} (total {})", t.iter().any(|x| x.id == args[3]), t.len()),
+            Err(e) => println!("ERR {e}"),
+        },
+        "playlists" => match core.clone().playlists().await {
+            Ok(p) => for x in p { println!("{} {} owner={} len={}", x.id, x.name, x.owner, x.length) },
+            Err(e) => println!("ERR {e}"),
+        },
+        "pltracks" => match core.clone().playlist_tracks(args[3].clone()).await {
+            Ok(t) => for x in t { println!("{} {} - {} album={:?} artists={:?}", x.id, x.title, x.artists, x.album_id, x.artist_refs.iter().map(|r| &r.id).collect::<Vec<_>>()) },
+            Err(e) => println!("ERR {e}"),
+        },
         _ => eprintln!("unknown command {cmd}"),
     }
 }

@@ -1,20 +1,17 @@
 package com.rutger.fastify.ui.screens
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,35 +24,48 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rutger.fastify.container
 import com.rutger.fastify.data.Collection
+import com.rutger.fastify.ui.LocalNavigator
 import java.time.LocalTime
+
+private const val SHELF_RELEASES = 12
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onOpen: (Collection) -> Unit, onDiagnostics: () -> Unit) {
+fun HomeScreen() {
     val c = LocalContext.current.container
+    val nav = LocalNavigator.current
     val vm = viewModel { HomeViewModel(c.library) }
+    val releasesVm = viewModel { NewReleasesViewModel(c.library) }
     val state by vm.state.collectAsStateWithLifecycle()
+    val releases by releasesVm.state.collectAsStateWithLifecycle()
     val playerState by c.player.state.collectAsStateWithLifecycle()
+    val pinned by c.downloads.collections.collectAsStateWithLifecycle()
+    val pinnedKeys = pinned.map { it.cacheKey }.toSet()
     val home = state.data
 
-    PullToRefreshBox(isRefreshing = state.refreshing && home != null, onRefresh = vm::refresh, modifier = Modifier.fillMaxSize()) {
+    PullToRefreshBox(
+        isRefreshing = state.refreshing && home != null,
+        onRefresh = { vm.refresh(); releasesVm.refresh() },
+        modifier = Modifier.fillMaxSize(),
+    ) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
             item {
                 Row(Modifier.padding(start = 16.dp, top = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(greeting(), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    IconButton(onClick = onDiagnostics) { Icon(Icons.Default.BugReport, "Diagnostics") }
+                    IconButton(onClick = nav::openDiagnostics) { Icon(Icons.Default.BugReport, "Diagnostics") }
                     IconButton(onClick = {
                         c.player.stopAndClear()
                         c.queueStore.clear()
                         c.library.clear()
                         c.history.clear()
                         c.streams.clear()
+                        c.downloads.clear()
+                        c.forgetUser()
                         c.auth.logout()
                     }) { Icon(Icons.AutoMirrored.Filled.Logout, "Log out") }
                 }
@@ -66,17 +76,13 @@ fun HomeScreen(onOpen: (Collection) -> Unit, onDiagnostics: () -> Unit) {
                         if (home == null) "Couldn't load your library" else "Refresh failed, showing cached library",
                         err,
                         onRetry = vm::refresh,
-                        onDiagnostics = onDiagnostics,
+                        onDiagnostics = nav::openDiagnostics,
                     )
                 }
             }
             if (home == null) {
                 if (state.refreshing) {
-                    item {
-                        androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
-                            androidx.compose.material3.CircularProgressIndicator()
-                        }
-                    }
+                    item { Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) { CircularProgressIndicator() } }
                 }
                 return@LazyColumn
             }
@@ -86,28 +92,24 @@ fun HomeScreen(onOpen: (Collection) -> Unit, onDiagnostics: () -> Unit) {
                 item {
                     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
                         items(home.recent, key = { it.id }) { t ->
-                            Column(
-                                Modifier.width(132.dp).padding(end = 12.dp)
-                                    .clickable { c.player.play(home.recent, home.recent.indexOf(t)) },
-                            ) {
-                                Artwork(t.imageUrl, 120.dp)
-                                Spacer(Modifier.height(6.dp))
-                                Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
-                                    color = if (playerState.current?.id == t.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                                Text(t.artists, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
+                            AlbumCard(t.title, t.artists, t.imageUrl,
+                                onClick = { c.player.play(home.recent, home.recent.indexOf(t)) },
+                                highlighted = playerState.current?.id == t.id)
                         }
                     }
                 }
             }
 
+            releases.data?.takeIf { it.isNotEmpty() }?.let { list ->
+                item { AlbumShelf("New releases for you", list.take(SHELF_RELEASES), nav::openCollection, onTitleClick = nav::openNewReleases) }
+            }
+
             item { SectionHeader("Your library") }
-            item { CollectionRow(Collection.Liked) { onOpen(Collection.Liked) } }
-            items(home.playlists, key = { "p" + it.id }) { CollectionRow(it) { onOpen(it) } }
+            item { CollectionRow(Collection.Liked, downloaded = Collection.Liked.cacheKey in pinnedKeys) { nav.openCollection(Collection.Liked) } }
+            items(home.playlists, key = { "p" + it.id }) { CollectionRow(it, downloaded = it.cacheKey in pinnedKeys) { nav.openCollection(it) } }
             if (home.albums.isNotEmpty()) {
                 item { SectionHeader("Albums") }
-                items(home.albums, key = { "a" + it.id }) { CollectionRow(it) { onOpen(it) } }
+                items(home.albums, key = { "a" + it.id }) { CollectionRow(it, downloaded = it.cacheKey in pinnedKeys) { nav.openCollection(it) } }
             }
         }
     }

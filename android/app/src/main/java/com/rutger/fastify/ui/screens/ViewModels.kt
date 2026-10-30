@@ -2,7 +2,9 @@ package com.rutger.fastify.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.rutger.fastify.data.ArtistPageData
 import com.rutger.fastify.data.Collection
+import com.rutger.fastify.data.Downloads
 import com.rutger.fastify.data.HomeData
 import com.rutger.fastify.data.LibraryRepository
 import com.rutger.fastify.data.Loadable
@@ -10,41 +12,81 @@ import com.rutger.fastify.data.SearchResults
 import com.rutger.fastify.data.Track
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalCoroutinesApi::class)
-class HomeViewModel(private val repo: LibraryRepository) : ViewModel() {
-    private val refresh = MutableStateFlow(0)
-
-    // Initial value is read synchronously from the snapshot so the first frame already has content.
-    val state: StateFlow<Loadable<HomeData>> = refresh
-        .flatMapLatest { repo.home() }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, Loadable(repo.cachedHome(), refreshing = true))
+/**
+ * Cache-first screen state: the snapshot for the first frame, then network refreshes.
+ * Subclasses call [refresh] at the end of their init (after their own properties exist).
+ */
+open class SwrViewModel<T>(initial: T?, private val load: () -> Flow<Loadable<T>>) : ViewModel() {
+    protected val _state = MutableStateFlow(Loadable(initial, refreshing = true))
+    val state: StateFlow<Loadable<T>> = _state
+    private var job: Job? = null
 
     fun refresh() {
-        refresh.value++
+        job?.cancel()
+        job = viewModelScope.launch { load().collect { onLoaded(it) } }
+    }
+
+    protected open fun onLoaded(value: Loadable<T>) {
+        _state.value = value
     }
 }
 
-@OptIn(ExperimentalCoroutinesApi::class)
-class CollectionViewModel(private val repo: LibraryRepository, private val collection: Collection) : ViewModel() {
-    private val refresh = MutableStateFlow(0)
+class HomeViewModel(repo: LibraryRepository) : SwrViewModel<HomeData>(repo.cachedHome(), repo::home) {
+    init {
+        refresh()
+    }
+}
 
-    val state: StateFlow<Loadable<List<Track>>> = refresh
-        .flatMapLatest { repo.tracks(collection) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, Loadable(repo.cachedTracks(collection), refreshing = true))
+class NewReleasesViewModel(repo: LibraryRepository) :
+    SwrViewModel<List<Collection>>(repo.cachedNewReleases(), repo::newReleases) {
+    init {
+        refresh()
+    }
+}
 
-    fun refresh() {
-        refresh.value++
+class ArtistViewModel(repo: LibraryRepository, id: String) :
+    SwrViewModel<ArtistPageData>(repo.cachedArtist(id), { repo.artist(id) }) {
+    init {
+        refresh()
+    }
+}
+
+class CollectionViewModel(
+    private val repo: LibraryRepository,
+    private val downloads: Downloads,
+    private val collection: Collection,
+) : SwrViewModel<List<Track>>(repo.cachedTracks(collection), { repo.tracks(collection) }) {
+    init {
+        // Local edits (remove from playlist, like) rewrite the snapshot: show them right away.
+        viewModelScope.launch {
+            repo.changes.filter { it == collection.cacheKey }.collect {
+                val tracks = repo.cachedTracks(collection)
+                _state.update { it.copy(data = tracks) }
+                if (tracks != null) downloads.sync(collection, tracks)
+            }
+        }
+        refresh()
+    }
+
+    override fun onLoaded(value: Loadable<List<Track>>) {
+        super.onLoaded(value)
+        // Fresh list from the network: keep a downloaded collection in sync.
+        if (!value.refreshing && value.error == null) value.data?.let { downloads.sync(collection, it) }
     }
 }
 

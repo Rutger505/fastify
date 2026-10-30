@@ -5,17 +5,24 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowCircleDown
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,12 +66,32 @@ fun Artwork(url: String?, size: Dp, modifier: Modifier = Modifier, liked: Boolea
     }
 }
 
+/** Green "downloaded" arrow, as in Spotify's track rows. */
 @Composable
-fun TrackRow(track: Track, playing: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun DownloadedMark(size: Dp = 14.dp) {
+    Icon(Icons.Default.ArrowCircleDown, "Downloaded", tint = Green, modifier = Modifier.size(size))
+    Spacer(Modifier.width(4.dp))
+}
+
+@Composable
+fun TrackRow(
+    track: Track,
+    playing: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    downloaded: Boolean = false,
+    onMore: (() -> Unit)? = null,
+    number: Int? = null,
+) {
     Row(
-        modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 6.dp),
+        modifier.fillMaxWidth().clickable(onClick = onClick)
+            .padding(start = 16.dp, end = if (onMore != null) 0.dp else 16.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (number != null) {
+            Text("$number", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(28.dp))
+        }
         Artwork(track.imageUrl, 48.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -75,19 +102,27 @@ fun TrackRow(track: Track, playing: Boolean, onClick: () -> Unit, modifier: Modi
                 color = if (playing) Green else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyLarge,
             )
-            Text(
-                track.artists,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (downloaded) DownloadedMark()
+                Text(
+                    track.artists,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+        if (onMore != null) {
+            IconButton(onClick = onMore) {
+                Icon(Icons.Default.MoreVert, "More options", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
 
 @Composable
-fun CollectionRow(c: Collection, onClick: () -> Unit) {
+fun CollectionRow(c: Collection, downloaded: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -96,27 +131,58 @@ fun CollectionRow(c: Collection, onClick: () -> Unit) {
         Artwork(c.imageUrl, 56.dp, liked = c.kind == CollectionKind.LIKED)
         Column(Modifier.weight(1f)) {
             Text(c.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
-            if (c.subtitle.isNotEmpty()) {
-                Text(
-                    c.subtitle,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+            if (c.subtitle.isNotEmpty() || downloaded) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (downloaded) DownloadedMark()
+                    Text(
+                        c.subtitle,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
             }
         }
     }
 }
 
+/** Square cover with title + subtitle, for horizontal shelves (releases, recently played). */
 @Composable
-fun SectionHeader(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 8.dp),
-    )
+fun AlbumCard(title: String, subtitle: String, imageUrl: String?, onClick: () -> Unit, highlighted: Boolean = false) {
+    Column(Modifier.width(144.dp).padding(end = 12.dp).clickable(onClick = onClick)) {
+        Artwork(imageUrl, 132.dp)
+        Spacer(Modifier.height(6.dp))
+        Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+        Text(subtitle, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+fun AlbumShelf(title: String, albums: List<Collection>, onOpen: (Collection) -> Unit, onTitleClick: (() -> Unit)? = null) {
+    if (albums.isEmpty()) return
+    SectionHeader(title, onClick = onTitleClick)
+    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
+        items(albums, key = { it.id }) { a -> AlbumCard(a.title, a.subtitle, a.imageUrl, onClick = { onOpen(a) }) }
+    }
+}
+
+@Composable
+fun SectionHeader(text: String, onClick: (() -> Unit)? = null) {
+    Row(
+        Modifier.fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        if (onClick != null) {
+            Text("Show all", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 fun formatTime(ms: Long): String {

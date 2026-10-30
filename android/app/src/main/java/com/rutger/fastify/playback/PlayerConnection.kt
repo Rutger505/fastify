@@ -107,6 +107,34 @@ class PlayerConnection(private val context: Context) {
 
     fun stopAndClear() = withController { stop(); clearMediaItems() }
 
+    // "Add to queue" items play after the current track, in the order they were added
+    // (like Spotify). The offset resets once playback moves to another track.
+    private var queueAnchor: String? = null
+    private var queueOffset = 0
+
+    fun addToQueue(track: Track) = withController {
+        if (mediaItemCount == 0) {
+            setMediaItem(track.toMediaItem())
+            prepare()
+            return@withController
+        }
+        val current = currentMediaItem?.mediaId
+        if (current != queueAnchor) {
+            queueAnchor = current
+            queueOffset = 0
+        }
+        val at = (currentMediaItemIndex + 1 + queueOffset).coerceAtMost(mediaItemCount)
+        addMediaItem(at, track.toMediaItem())
+        queueOffset++
+    }
+
+    fun removeFromQueue(index: Int) = withController {
+        if (index in 0 until mediaItemCount && index != currentMediaItemIndex) removeMediaItem(index)
+    }
+
+    /** Live position, for lyrics sync (the state ticker only updates twice a second). */
+    fun position(): Long = controller?.currentPosition ?: _state.value.positionMs
+
     private fun withController(block: MediaController.() -> Unit) {
         val c = controller
         if (c != null) block(c) else {

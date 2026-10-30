@@ -28,11 +28,18 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rutger.fastify.container
-import com.rutger.fastify.data.Collection
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.rutger.fastify.ui.LocalNavigator
 
 @Composable
-fun SearchScreen(onOpen: (Collection) -> Unit) {
+fun SearchScreen() {
     val c = LocalContext.current.container
+    val nav = LocalNavigator.current
+    val onOpen = nav::openCollection
+    val downloaded by c.downloads.trackIds.collectAsStateWithLifecycle()
+    var menu by remember { mutableStateOf<TrackMenu?>(null) }
     val vm = viewModel { SearchViewModel(c.library) }
     val query by vm.query.collectAsStateWithLifecycle()
     val state by vm.state.collectAsStateWithLifecycle()
@@ -61,7 +68,8 @@ fun SearchScreen(onOpen: (Collection) -> Unit) {
                 if (results.tracks.isNotEmpty()) {
                     item { SectionHeader("Songs") }
                     itemsIndexed(results.tracks, key = { _, t -> "t" + t.id }) { i, t ->
-                        TrackRow(t, playing = playerState.current?.id == t.id, onClick = { c.player.play(results.tracks, i) })
+                        TrackRow(t, playing = playerState.current?.id == t.id, onClick = { c.player.play(results.tracks, i) },
+                            downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) })
                     }
                 }
                 if (results.albums.isNotEmpty()) {
@@ -75,4 +83,6 @@ fun SearchScreen(onOpen: (Collection) -> Unit) {
             }
         }
     }
+
+    menu?.let { TrackMenuSheet(it, onDismiss = { menu = null }) }
 }

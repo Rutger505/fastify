@@ -4,6 +4,7 @@ import android.app.Application
 import com.rutger.fastify.diag.AppLog
 import com.rutger.fastify.auth.AuthManager
 import com.rutger.fastify.core.FastifyCore
+import com.rutger.fastify.data.Downloads
 import com.rutger.fastify.data.LibraryRepository
 import com.rutger.fastify.data.SnapshotStore
 import com.rutger.fastify.data.PlayHistory
@@ -16,6 +17,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -44,13 +47,29 @@ class AppContainer(val app: Application) {
     val streams by lazy { StreamPool { core } }
     val prefetcher by lazy { Prefetcher(scope) { core } }
     val player by lazy { PlayerConnection(app) }
+    val downloads by lazy { Downloads(app, scope, { core }, library) }
+
+    private val sessionPrefs by lazy { app.getSharedPreferences("session", android.content.Context.MODE_PRIVATE) }
+    private val _username by lazy { MutableStateFlow(sessionPrefs.getString("username", null)) }
+    /** Canonical Spotify username (known after the first connect), to tell own playlists apart. */
+    val username: StateFlow<String?> get() = _username
+
+    fun forgetUser() {
+        sessionPrefs.edit().clear().apply()
+        _username.value = null
+    }
 
     /** Connect the Spotify session in the background while the UI draws from cache. */
     fun warmUp() {
         scope.launch(Dispatchers.IO) {
             if (!auth.isLoggedIn) return@launch
+            downloads.start()
             runCatching { core.connect() }
-                .onSuccess { AppLog.i("Core", "session ready for $it") }
+                .onSuccess {
+                    AppLog.i("Core", "session ready for $it")
+                    _username.value = it
+                    sessionPrefs.edit().putString("username", it).apply()
+                }
                 .onFailure { AppLog.w("Core", "warm-up connect failed", it) }
         }
     }

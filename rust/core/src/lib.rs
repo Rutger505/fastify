@@ -3,6 +3,8 @@
 //! Kotlin owns UI, metadata (Web API) and playback (Media3). Rust owns the Spotify session,
 //! audio keys, CDN downloads, decryption and the audio file cache.
 
+mod catalog;
+mod edit;
 mod error;
 mod keystore;
 mod library;
@@ -24,7 +26,8 @@ use tokio::sync::Mutex;
 
 pub use error::CoreError;
 use keystore::{KeyEntry, KeyStore};
-pub use library::{AlbumInfo, PlaylistInfo, TrackInfo};
+pub use catalog::{AlbumPage, ArtistPage, LyricLine, Lyrics};
+pub use library::{AlbumInfo, ArtistRef, PlaylistInfo, TrackInfo};
 pub use stream::TrackStream;
 
 uniffi::setup_scaffolding!();
@@ -53,6 +56,8 @@ pub struct FastifyCore {
     keys: KeyStore,
     session: Mutex<Option<Session>>,
     device_id: String,
+    /// Downloaded tracks: encrypted audio files outside the LRU cache, never evicted.
+    downloads: PathBuf,
 }
 
 #[uniffi::export]
@@ -76,6 +81,8 @@ impl FastifyCore {
         )
         .map_err(CoreError::other)?;
         let keys = KeyStore::open(files.join("keys"))?;
+        let downloads = files.join("downloads");
+        std::fs::create_dir_all(&downloads)?;
         let device_id = keys.device_id()?;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -89,6 +96,7 @@ impl FastifyCore {
             keys,
             session: Mutex::new(None),
             device_id,
+            downloads,
         }))
     }
 
@@ -128,6 +136,12 @@ impl FastifyCore {
             s.shutdown();
         }
         self.keys.clear()?;
+        // Downloads can't be decrypted without the keys.
+        if let Ok(dir) = std::fs::read_dir(&self.downloads) {
+            for e in dir.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
         let creds = self.cache_credentials_path();
         if let Some(p) = creds {
             let _ = std::fs::remove_file(p);
@@ -222,6 +236,150 @@ impl FastifyCore {
             .await
     }
 
+    /// Artist page: top tracks, albums, singles, compilations, appears on.
+    pub async fn artist(self: Arc<Self>, artist_id: String) -> Result<ArtistPage, CoreError> {
+        self.with_session(|s| async move { catalog::artist(&s, &artist_id).await })
+            .await
+    }
+
+    /// Releases by followed artists from the last `days` days, newest first.
+    pub async fn new_releases(self: Arc<Self>, days: u32) -> Result<Vec<AlbumInfo>, CoreError> {
+        self.with_session(move |s| async move { catalog::new_releases(&s, days).await })
+            .await
+    }
+
+    /// Album header (name, artists, year) plus its tracks.
+    pub async fn album(self: Arc<Self>, album_id: String) -> Result<AlbumPage, CoreError> {
+        self.with_session(|s| async move { catalog::album(&s, &album_id).await })
+            .await
+    }
+
+    /// Lyrics, None when Spotify has none for this track.
+    pub async fn lyrics(self: Arc<Self>, track_id: String) -> Result<Option<Lyrics>, CoreError> {
+        self.with_session(|s| async move { catalog::lyrics(&s, &track_id).await })
+            .await
+    }
+
+    pub async fn playlist_add(
+        self: Arc<Self>,
+        playlist_id: String,
+        track_ids: Vec<String>,
+    ) -> Result<(), CoreError> {
+        self.with_session(|s| async move { edit::playlist_add(&s, &playlist_id, &track_ids).await })
+            .await
+    }
+
+    /// Remove one row: the `occurrence`-th copy (0-based) of the track in the playlist.
+    pub async fn playlist_remove(
+        self: Arc<Self>,
+        playlist_id: String,
+        track_id: String,
+        occurrence: u32,
+    ) -> Result<(), CoreError> {
+        self.with_session(move |s| async move {
+            edit::playlist_remove(&s, &playlist_id, &track_id, occurrence).await
+        })
+        .await
+    }
+
+    pub async fn set_liked(
+        self: Arc<Self>,
+        track_ids: Vec<String>,
+        liked: bool,
+    ) -> Result<(), CoreError> {
+        self.with_session(move |s| async move { edit::set_liked(&s, &track_ids, liked).await })
+            .await
+    }
+
+    /// Download a track for offline use (kept outside the LRU audio cache). No-op when already
+    /// downloaded. Returns once the file is complete on disk.
+    pub async fn download(self: Arc<Self>, track_id: String) -> Result<(), CoreError> {
+        let target = self
+            .download_path(&track_id)
+            .ok_or_else(|| CoreError::other(format!("bad track id {track_id}")))?;
+        if self.is_track_downloaded(track_id.clone()) {
+            return Ok(());
+        }
+        let this = self.clone();
+        self.rt
+            .spawn(async move {
+                let tmp = target.with_extension("part");
+                // Fast path: the file is already in the LRU cache, copy it without a session.
+                if let Some(cached) = this
+                    .keys
+                    .get(&track_id)
+                    .and_then(|e| this.cache.file_path(e.file_id()))
+                    .filter(|p| p.exists())
+                {
+                    std::fs::copy(&cached, &tmp)?;
+                } else {
+                    let session = this.session().await?;
+                    let entry = this.resolve(&session, &track_id).await?;
+                    let mut file =
+                        AudioFile::open(&session, entry.file_id(), entry.bytes_per_second())
+                            .await
+                            .map_err(CoreError::from)?;
+                    if let Ok(ctl) = file.get_stream_loader_controller() {
+                        ctl.set_stream_mode();
+                    }
+                    let out = tmp.clone();
+                    // Raw (still encrypted) bytes, same format as librespot's cache files.
+                    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                        let mut w = std::io::BufWriter::new(std::fs::File::create(&out)?);
+                        std::io::copy(&mut file, &mut w)?;
+                        std::io::Write::flush(&mut w)
+                    })
+                    .await
+                    .map_err(CoreError::other)??;
+                }
+                std::fs::rename(&tmp, &target)?;
+                Ok(())
+            })
+            .await
+            .map_err(CoreError::other)?
+    }
+
+    pub fn is_track_downloaded(&self, track_id: String) -> bool {
+        self.keys.get(&track_id).is_some()
+            && self.download_path(&track_id).is_some_and(|p| p.exists())
+    }
+
+    /// Ids of all downloaded tracks.
+    pub fn downloaded_tracks(&self) -> Vec<String> {
+        std::fs::read_dir(&self.downloads)
+            .map(|dir| {
+                dir.flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().into_string().ok()?;
+                        name.strip_suffix(".ogg").map(str::to_owned)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn remove_download(&self, track_id: String) -> Result<(), CoreError> {
+        if let Some(p) = self.download_path(&track_id) {
+            match std::fs::remove_file(p) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Bytes used by downloads.
+    pub fn downloads_size(&self) -> u64 {
+        std::fs::read_dir(&self.downloads)
+            .map(|dir| {
+                dir.flatten()
+                    .filter_map(|e| e.metadata().ok())
+                    .map(|m| m.len())
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
     /// Metadata for track ids (e.g. local play history), in order.
     pub async fn tracks(
         self: Arc<Self>,
@@ -233,6 +391,9 @@ impl FastifyCore {
 
     /// True when the track can start without any network (audio file and key on disk).
     pub fn is_track_cached(&self, track_id: String) -> bool {
+        if self.is_track_downloaded(track_id.clone()) {
+            return true;
+        }
         self.keys
             .get(&track_id)
             .and_then(|e| self.cache.file_path(e.file_id()))
@@ -316,11 +477,20 @@ impl FastifyCore {
             .map(|p| p.join("credentials").join("credentials.json"))
     }
 
+    fn download_path(&self, track_id: &str) -> Option<PathBuf> {
+        // Base62 ids are alphanumeric; reject anything else to keep paths safe.
+        (!track_id.is_empty() && track_id.chars().all(|c| c.is_ascii_alphanumeric()))
+            .then(|| self.downloads.join(format!("{track_id}.ogg")))
+    }
+
     fn open_cached(&self, track_id: &str) -> Result<Option<TrackStream>, CoreError> {
         let Some(entry) = self.keys.get(track_id) else {
             return Ok(None);
         };
-        let Some(file) = self.cache.file(entry.file_id()) else {
+        let downloaded = self
+            .download_path(track_id)
+            .and_then(|p| std::fs::File::open(p).ok());
+        let Some(file) = downloaded.or_else(|| self.cache.file(entry.file_id())) else {
             return Ok(None);
         };
         TrackStream::new(AudioFile::Cached(file), entry.key(), true).map(Some)
