@@ -228,13 +228,33 @@ ui() {
   ui_texts
 }
 
+# Poll instead of a fixed sleep: ready once the app has focus, shows text, has no spinner
+# (Compose progress indicators dump as android.widget.ProgressBar) and two dumps in a row
+# are identical. Gives up after LAUNCH_TIMEOUT seconds and shows whatever is on screen.
 launch() {
+  local deadline xml texts prev= ready=
   adb shell am force-stop "$PKG"
   adb logcat -c
   adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-  sleep "${LAUNCH_WAIT:-20}"
+  deadline=$(( $(now) + ${LAUNCH_TIMEOUT:-60} ))
+  until focus | grep -q "$PKG/"; do
+    [ "$(now)" -lt "$deadline" ] || { ui; die "app is not in the foreground after launch (see focus above + 'emu logs')"; }
+    sleep 1
+  done
+  while [ "$(now)" -lt "$deadline" ]; do
+    xml="$(ui_xml)"
+    texts="$(grep -oE '(text|content-desc)="[^"]+"' <<<"$xml" || true)"
+    if [ -n "$texts" ] && ! grep -q 'class="android.widget.ProgressBar"' <<<"$xml"; then
+      [ "$texts" = "$prev" ] && { ready=1; break; }
+      prev="$texts"
+    else
+      prev=
+    fi
+    sleep 1
+  done
+  [ -n "$ready" ] || echo "emu: app still loading after ${LAUNCH_TIMEOUT:-60}s, showing current screen" >&2
   ui
-  focus | grep -q "$PKG/" || die "app is not in the foreground after launch (see focus above + 'emu logs')"
+  focus | grep -q "$PKG/" || die "app left the foreground after launch (see focus above + 'emu logs')"
 }
 
 tap() {
