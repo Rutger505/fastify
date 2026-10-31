@@ -49,6 +49,9 @@ android {
         }
     }
 
+    // lintVital on every release costs ~30 s; run ./gradlew lint by hand when needed.
+    lint { checkReleaseBuilds = false }
+
     buildFeatures {
         compose = true
         buildConfig = true
