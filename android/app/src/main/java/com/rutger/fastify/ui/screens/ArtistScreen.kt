@@ -130,13 +130,12 @@ fun ArtistScreen(artistId: String) {
                     )
                 }
                 if (top.size > POPULAR_STEP) {
-                    // "Show less" stays on the left, "Show more" (5 at a time) on the right.
+                    // Left-aligned: "Show less" first, "Show more" (5 at a time) right next to it.
                     item(key = "popular_more") {
                         Row(Modifier.fillMaxWidth().animateItem(fast(), fast(), fast()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (popularShown > POPULAR_STEP) {
                                 TextButton(onClick = { popularShown = POPULAR_STEP }) { Text("Show less") }
                             }
-                            Spacer(Modifier.weight(1f))
                             if (popularShown < top.size) {
                                 TextButton(onClick = { popularShown = (popularShown + POPULAR_STEP).coerceAtMost(top.size) }) { Text("Show more") }
                             }
