@@ -25,7 +25,7 @@ KEEP=3
 die() { echo "publish: $*" >&2; exit 1; }
 [ -f "$APK" ] || die "no APK at $APK (EMU_OWNER=<id> scripts/emu build release)"
 
-badging="$("$AAPT2" dump badging "$APK" | head -1)"
+badging="$("$AAPT2" dump badging "$APK" | awk 'NR == 1')"  # not head: SIGPIPE + pipefail
 code="$(sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" <<<"$badging")"
 name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"$badging")"
 [ -n "$code" ] && [ -n "$name" ] || die "could not read version from: $badging"
