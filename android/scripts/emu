@@ -248,7 +248,7 @@ build() {
   echo "built: $apk ($(stat -c '%s bytes, %y' "$apk"))"
 }
 
-install() { test -s "$APK" || die "no $APK (run: emu build)"; timeout 180 adb install -r "$APK"; }
+install() { test -s "$APK" || die "no $APK (run: emu build)"; timeout 180 adb install -r -d "$APK"; }  # -d: versionCode is the commit count, older checkouts are lower
 
 ui() {
   dismiss_anr

@@ -165,7 +165,7 @@ class Updater(
         val req = Request.Builder().url("$baseUrl/version.json").header("Cache-Control", "no-cache").build()
         http.newCall(req).execute().use { resp ->
             val body = resp.body.string()
-            if (!resp.isSuccessful) error("HTTP ${resp.code}: ${body.take(200)}")
+            if (!resp.isSuccessful) error("HTTP ${resp.code}: ${body.take(200).replace('\n', ' ')}")
             return json.decodeFromString(Release.serializer(), body)
         }
     }

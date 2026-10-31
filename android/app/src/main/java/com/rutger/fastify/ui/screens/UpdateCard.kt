@@ -34,7 +34,7 @@ fun UpdateCard(updater: Updater) {
             "Android wants a confirmation for this install.",
             "Install", updater::installNow,
         )
-        is UpdateStatus.Installing -> UpdateRow("Installing ${s.release.versionName}", "Fastify restarts when done.", null, null)
+        is UpdateStatus.Installing -> UpdateRow("Installing ${s.release.versionName}", "Fastify closes when done; open it again.", null, null)
         is UpdateStatus.Failed -> if (s.release != null) {
             ErrorCard("Update ${s.release.versionName} failed", s.message, onRetry = updater::installNow)
         }
