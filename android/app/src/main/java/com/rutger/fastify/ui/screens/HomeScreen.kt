@@ -1,5 +1,6 @@
 package com.rutger.fastify.ui.screens
 
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -50,7 +51,7 @@ fun HomeScreen() {
 
     PullToRefreshBox(
         isRefreshing = state.refreshing && home != null,
-        onRefresh = { vm.refresh(); releasesVm.refresh() },
+        onRefresh = { vm.refresh(); releasesVm.refresh(); c.scope.launch { c.updater.check() } },
         modifier = Modifier.fillMaxSize(),
     ) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {

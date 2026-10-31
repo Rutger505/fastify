@@ -1,5 +1,6 @@
 package com.rutger.fastify.ui.screens
 
+import com.rutger.fastify.ui.theme.Green
 import com.rutger.fastify.ui.fast
 import android.text.Html
 import java.text.NumberFormat
@@ -112,8 +113,10 @@ fun ArtistScreen(artistId: String) {
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = { if (top.isNotEmpty()) c.player.play(top, 0, shuffle = true, contextUri = "spotify:artist:$artistId") }) { Icon(Icons.Default.Shuffle, "Shuffle") }
-                    FilledIconButton(onClick = { if (top.isNotEmpty()) c.player.play(top, 0, contextUri = "spotify:artist:$artistId") }, modifier = Modifier.size(56.dp)) {
+                    IconButton(onClick = c.player::toggleShuffle) {
+                        Icon(Icons.Default.Shuffle, "Shuffle", tint = if (playerState.shuffle) Green else MaterialTheme.colorScheme.onSurface)
+                    }
+                    FilledIconButton(onClick = { if (top.isNotEmpty()) c.player.play(top, contextUri = "spotify:artist:$artistId") }, modifier = Modifier.size(56.dp)) {
                         Icon(Icons.Default.PlayArrow, "Play", modifier = Modifier.size(32.dp))
                     }
                 }
@@ -127,6 +130,7 @@ fun ArtistScreen(artistId: String) {
                         downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, number = i + 1,
                         trailing = artist.playcounts[t.id]?.let { streamsFormat.format(it) },
                         modifier = Modifier.animateItem(fast(), fast(), fast()),
+                        onSwipeQueue = { c.player.addToQueue(t) },
                     )
                 }
                 if (top.size > POPULAR_STEP) {

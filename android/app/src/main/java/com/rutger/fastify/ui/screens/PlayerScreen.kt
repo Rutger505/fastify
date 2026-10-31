@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -354,34 +355,30 @@ fun PlayerScreen(onClose: () -> Unit) {
     if (showQueue) {
         FastifySheet(onDismiss = { showQueue = false }) {
             val listState = rememberLazyListState()
-            LaunchedEffect(Unit) { listState.scrollToItem(state.index.coerceAtLeast(0)) }
-            val autoplay by c.settings.autoplay.collectAsStateWithLifecycle()
+            // Show the queue in play order (shuffled when shuffle is on), like Spotify.
+            val order = state.order.takeIf { it.size == state.queue.size } ?: state.queue.indices.toList()
+            LaunchedEffect(Unit) { listState.scrollToItem(order.indexOf(state.index).coerceAtLeast(0)) }
             SheetTitle("Queue")
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Autoplay", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        "Keep playing similar songs when the queue ends",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = autoplay, onCheckedChange = c.settings::setAutoplay)
-            }
             LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
-                itemsIndexed(state.queue, key = { i, t -> "$i-${t.id}" }) { i, t ->
-                    if (i == state.autoplayFrom) {
+                items(order, key = { i -> "$i-${state.queue[i].id}" }) { i ->
+                    val t = state.queue[i]
+                    // Sections after the current track: hand-queued, then the playlist, then recommendations.
+                    val pos = order.indexOf(i)
+                    val cur = order.indexOf(state.index)
+                    val prev = order.getOrNull(pos - 1)
+                    fun kind(x: Int) = when { x in state.queued -> 0; state.autoplayFrom in 0..x -> 2; else -> 1 }
+                    val header = if (pos <= cur) null else if (prev == state.index || prev == null || kind(prev) != kind(i)) {
+                        listOf("Next in queue", "Next up", "Recommended")[kind(i)]
+                    } else null
+                    if (header != null) {
                         Text(
-                            "Recommended",
+                            header,
                             style = MaterialTheme.typography.titleSmall,
                             modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
                         )
                     }
                     TrackRow(t, playing = i == state.index, onClick = { player.playQueueIndex(i) },
-                        onMore = { menu = TrackMenu(t, queueIndex = i.takeIf { it != state.index }) })
+                        onMore = { menu = TrackMenu(t, queueIndex = i.takeIf { it != state.index }) }, queued = i in state.queued)
                 }
             }
         }

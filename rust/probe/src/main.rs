@@ -6,6 +6,7 @@
 //!   fastify-probe <data-dir> artist|album|lyrics <id>
 //!   fastify-probe <data-dir> pladd <playlist> <track> | plrm <playlist> <track> <occurrence>
 //!   fastify-probe <data-dir> like|unlike <track> | download <track>
+//!   fastify-probe <data-dir> shazam <file.s16>  # raw 16 kHz mono s16le, e.g. ffmpeg -i x.mp3 -ss 60 -t 12 -ac 1 -ar 16000 -f s16le x.s16
 //!
 //! The OAuth redirect goes to 127.0.0.1:8898 on this machine. When logging in from another
 //! device, copy the failed redirect URL and replay it here: `curl '<url>'`.
@@ -96,6 +97,14 @@ async fn main() {
                     println!("{} tracks", t.len());
                     for x in t { println!("{} {} - {}", x.id, x.title, x.artists) }
                 }
+                Err(e) => println!("ERR {e}"),
+            }
+        }
+        "shazam" => {
+            let raw = std::fs::read(&args[3]).expect("pcm file");
+            let pcm: Vec<i16> = raw.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+            match core.clone().shazam(pcm).await {
+                Ok(m) => println!("{m:?}"),
                 Err(e) => println!("ERR {e}"),
             }
         }

@@ -9,6 +9,7 @@ mod error;
 mod keystore;
 mod library;
 mod pathfinder;
+mod shazam;
 mod stream;
 
 use std::path::PathBuf;
@@ -181,6 +182,11 @@ impl FastifyCore {
 
     /// Raw GET against Spotify's internal API (spclient), e.g. `/playlist/v2/user/x/rootlist`.
     /// Used for diagnostics now and as the base for internal-API library/search.
+    /// Recognize a song from 16 kHz mono PCM (Shazam via SongRec's fingerprint). None = no match.
+    pub async fn shazam(self: Arc<Self>, pcm: Vec<i16>) -> Result<Option<shazam::ShazamMatch>, CoreError> {
+        self.rt.spawn(shazam::recognize(pcm)).await.map_err(CoreError::other)?
+    }
+
     pub async fn spclient_get(self: Arc<Self>, path: String) -> Result<Vec<u8>, CoreError> {
         let this = self.clone();
         self.rt
@@ -604,3 +610,4 @@ pub(crate) fn file_id_from_hex(hex_str: &str) -> Option<FileId> {
     let raw = hex::decode(hex_str).ok()?;
     (raw.len() == 20).then(|| FileId::from_raw(&raw))
 }
+

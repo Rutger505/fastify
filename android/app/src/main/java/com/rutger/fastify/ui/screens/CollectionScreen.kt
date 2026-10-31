@@ -180,12 +180,13 @@ fun CollectionScreen(collection: Collection) {
                         )
                     }
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, 0, shuffle = true, contextUri = collection.contextUri(c.username.value)) }) {
-                        Icon(Icons.Default.Shuffle, "Shuffle")
+                    // Same as the player's shuffle button: toggles shuffle mode; Play starts in that mode.
+                    IconButton(onClick = c.player::toggleShuffle) {
+                        Icon(Icons.Default.Shuffle, "Shuffle", tint = if (playerState.shuffle) Green else MaterialTheme.colorScheme.onSurface)
                     }
                     Spacer(Modifier.width(4.dp))
                     FilledIconButton(
-                        onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, 0, contextUri = collection.contextUri(c.username.value)) },
+                        onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, contextUri = collection.contextUri(c.username.value)) },
                         modifier = Modifier.size(56.dp),
                     ) { Icon(Icons.Default.PlayArrow, "Play", modifier = Modifier.size(32.dp)) }
                 }
@@ -216,6 +217,7 @@ fun CollectionScreen(collection: Collection) {
                     onClick = { c.player.play(shownTracks, shown.indexOf(row), contextUri = collection.contextUri(c.username.value)) },
                     downloaded = t.id in downloadedIds,
                     onMore = { menu = TrackMenu(t, context = collection, occurrence = row.occurrence) },
+                    onSwipeQueue = { c.player.addToQueue(t) },
                 )
             }
         }

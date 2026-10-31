@@ -1,6 +1,24 @@
 package com.rutger.fastify.ui.screens
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
+import com.rutger.fastify.ui.fast
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -86,6 +104,60 @@ fun TrackRow(
     subtitle: String? = null,
     /** Short text right-aligned next to the more button (e.g. play count on artist pages). */
     trailing: String? = null,
+    /** Swipe left-to-right adds the track to the queue. */
+    onSwipeQueue: (() -> Unit)? = null,
+    /** Hand-queued (shown in the queue sheet). */
+    queued: Boolean = false,
+) {
+    if (onSwipeQueue == null) {
+        TrackRowContent(track, playing, onClick, modifier, downloaded, onMore, number, subtitle, trailing, queued)
+        return
+    }
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val offset = remember { Animatable(0f) }
+    var width by remember { mutableIntStateOf(1) }
+    val threshold = width * 0.3f
+    Box(modifier.fillMaxWidth().onSizeChanged { width = it.width.coerceAtLeast(1) }) {
+        if (offset.value > 0f) {
+            Box(
+                Modifier.matchParentSize().background(if (offset.value >= threshold) Green else MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(start = 24.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue", tint = Color.Black) }
+        }
+        TrackRowContent(
+            track, playing, onClick,
+            Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }
+                .background(MaterialTheme.colorScheme.background)
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { d -> scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, width * 0.6f)) } },
+                    onDragStopped = {
+                        if (offset.value >= threshold) {
+                            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                            onSwipeQueue()
+                        }
+                        offset.animateTo(0f, fast())
+                    },
+                ),
+            downloaded, onMore, number, subtitle, trailing, queued,
+        )
+    }
+}
+
+@Composable
+private fun TrackRowContent(
+    track: Track,
+    playing: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier,
+    downloaded: Boolean,
+    onMore: (() -> Unit)?,
+    number: Int?,
+    subtitle: String?,
+    trailing: String?,
+    queued: Boolean,
 ) {
     Row(
         modifier.fillMaxWidth().clickable(onClick = onClick)
@@ -107,6 +179,9 @@ fun TrackRow(
                 style = MaterialTheme.typography.bodyLarge,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (queued) {
+                    Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Queued by you", tint = Green, modifier = Modifier.size(16.dp).padding(end = 2.dp))
+                }
                 if (downloaded) DownloadedMark()
                 Text(
                     subtitle ?: track.artists,

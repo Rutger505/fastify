@@ -44,4 +44,5 @@ class AppendingShuffleOrder(private val inner: ShuffleOrder) : ShuffleOrder {
         AppendingShuffleOrder(inner.cloneAndRemove(indexFrom, indexToExclusive))
 
     override fun cloneAndClear() = AppendingShuffleOrder(inner.cloneAndClear())
+
 }

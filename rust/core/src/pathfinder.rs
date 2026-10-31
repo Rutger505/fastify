@@ -57,7 +57,7 @@ fn hashes() -> &'static Mutex<HashMap<String, String>> {
     })
 }
 
-async fn send(req: Request<Full<Bytes>>) -> Result<(http::StatusCode, Bytes), CoreError> {
+pub(crate) async fn send(req: Request<Full<Bytes>>) -> Result<(http::StatusCode, Bytes), CoreError> {
     let res = client()
         .request(req)
         .await

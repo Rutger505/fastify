@@ -16,6 +16,8 @@ data class SavedQueue(
     val contextUri: String? = null,
     /** Indices of autoplay recommendations in `tracks`. */
     val autoplay: List<Int> = emptyList(),
+    /** Indices of hand-queued tracks in `tracks`. */
+    val queued: List<Int> = emptyList(),
 )
 
 /** Last queue + position, restored paused on launch so play is instant. */

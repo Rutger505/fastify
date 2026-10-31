@@ -32,9 +32,13 @@ data class PlayerUiState(
     val shuffle: Boolean = false,
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val queue: List<Track> = emptyList(),
+    /** Queue indices in play order: shuffled order when shuffle is on. */
+    val order: List<Int> = emptyList(),
     val index: Int = 0,
     /** Queue index where autoplay recommendations start, -1 when there are none. */
     val autoplayFrom: Int = -1,
+    /** Queue indices added by hand. */
+    val queued: Set<Int> = emptySet(),
     val error: String? = null,
 )
 
@@ -81,11 +85,19 @@ class PlayerConnection(private val context: Context) {
     }
 
     /** `contextUri`: what the tracks are (spotify:playlist:..., album, artist, collection), seeds autoplay. */
-    fun play(tracks: List<Track>, startIndex: Int, shuffle: Boolean = false, contextUri: String? = null) = withController {
+    /**
+     * Play [tracks] from [startIndex] (-1 = from the top: a random track when shuffling).
+     * [shuffle] null keeps the current shuffle mode, like Spotify. Shuffle is switched off and
+     * back on around the swap so the service reshuffles with the start track first.
+     */
+    fun play(tracks: List<Track>, startIndex: Int = -1, shuffle: Boolean? = null, contextUri: String? = null) = withController {
+        if (tracks.isEmpty()) return@withController
+        val sh = shuffle ?: shuffleModeEnabled
+        val start = if (startIndex >= 0) startIndex.coerceAtMost(tracks.lastIndex) else if (sh) tracks.indices.random() else 0
         setContext(contextUri)
-        shuffleModeEnabled = shuffle
-        setMediaItems(tracks.map { it.toMediaItem() }, if (shuffle) 0 else startIndex, 0)
-        if (shuffle) seekTo(currentTimeline.getFirstWindowIndex(true).coerceAtLeast(0), 0)
+        shuffleModeEnabled = false
+        setMediaItems(tracks.map { it.toMediaItem() }, start, 0)
+        shuffleModeEnabled = sh
         prepare()
         play()
     }
@@ -120,25 +132,17 @@ class PlayerConnection(private val context: Context) {
         )
     }
 
-    // "Add to queue" items play after the current track, in the order they were added
-    // (like Spotify). The offset resets once playback moves to another track.
-    private var queueAnchor: String? = null
-    private var queueOffset = 0
-
+    // "Add to queue" items play after the current track and earlier queued ones, before the rest
+    // of the playlist (like Spotify). In shuffle mode the service keeps them in that spot.
     fun addToQueue(track: Track) = withController {
         if (mediaItemCount == 0) {
             setMediaItem(track.toMediaItem())
             prepare()
             return@withController
         }
-        val current = currentMediaItem?.mediaId
-        if (current != queueAnchor) {
-            queueAnchor = current
-            queueOffset = 0
-        }
-        val at = (currentMediaItemIndex + 1 + queueOffset).coerceAtMost(mediaItemCount)
-        addMediaItem(at, track.toMediaItem())
-        queueOffset++
+        var at = currentMediaItemIndex + 1
+        while (at < mediaItemCount && getMediaItemAt(at).isQueued) at++
+        addMediaItem(at, track.toMediaItem(queued = true))
     }
 
     fun removeFromQueue(index: Int) = withController {
@@ -171,18 +175,32 @@ class PlayerConnection(private val context: Context) {
             shuffle = c.shuffleModeEnabled,
             repeatMode = c.repeatMode,
             queue = queue,
+            order = if (full) playOrder(c) else _state.value.order,
             index = c.currentMediaItemIndex,
             autoplayFrom = autoplayFrom,
+            queued = if (full) (0 until c.mediaItemCount).filter { c.getMediaItemAt(it).isQueued }.toSet() else _state.value.queued,
             error = c.playerError?.let(::describe),
         )
     }
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
-            refresh(full = events.contains(Player.EVENT_TIMELINE_CHANGED))
+            refresh(full = events.contains(Player.EVENT_TIMELINE_CHANGED) || events.contains(Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED))
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refresh(full = false)
+    }
+
+    private fun playOrder(c: MediaController): List<Int> {
+        val t = c.currentTimeline
+        if (t.isEmpty) return emptyList()
+        val out = ArrayList<Int>(t.windowCount)
+        var i = t.getFirstWindowIndex(c.shuffleModeEnabled)
+        while (i != androidx.media3.common.C.INDEX_UNSET && out.size < t.windowCount) {
+            out += i
+            i = t.getNextWindowIndex(i, Player.REPEAT_MODE_OFF, c.shuffleModeEnabled)
+        }
+        return out
     }
 
     private fun describe(e: PlaybackException): String =

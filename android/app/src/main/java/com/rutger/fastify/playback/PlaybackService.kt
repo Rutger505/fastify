@@ -1,5 +1,7 @@
 package com.rutger.fastify.playback
 
+import androidx.media3.exoplayer.source.ShuffleOrder
+import kotlin.random.Random
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
@@ -103,8 +105,9 @@ class PlaybackService : MediaSessionService() {
         val saved = container.queueStore.load() ?: return
         contextUri = saved.contextUri
         val autoplay = saved.autoplay.toSet()
+        val queued = saved.queued.toSet()
         player.setMediaItems(
-            saved.tracks.mapIndexed { i, t -> t.toMediaItem(autoplay = i in autoplay) },
+            saved.tracks.mapIndexed { i, t -> t.toMediaItem(autoplay = i in autoplay, queued = i in queued) },
             saved.index.coerceIn(0, saved.tracks.lastIndex),
             saved.positionMs,
         )
@@ -124,6 +127,7 @@ class PlaybackService : MediaSessionService() {
             repeatMode = player.repeatMode,
             contextUri = contextUri,
             autoplay = items.indices.filter { items[it].isAutoplay },
+            queued = items.indices.filter { items[it].isQueued },
         )
         container.scope.launch(Dispatchers.IO) { container.queueStore.save(queue) }
     }
@@ -157,12 +161,35 @@ class PlaybackService : MediaSessionService() {
     }
 
     /**
+     * Two queues, like Spotify: hand-queued tracks play right after the current one in the order
+     * they were added, then the playlist (shuffled when shuffle is on), then recommendations.
+     * [reshuffle]: new random order for everything after the current track (shuffle turned on).
+     */
+    private fun arrangeShuffle(reshuffle: Boolean) {
+        val n = player.mediaItemCount
+        if (!player.shuffleModeEnabled || n < 2) return
+        val cur = player.currentMediaItemIndex.coerceIn(0, n - 1)
+        val order = playOrder()
+        val pos = order.indexOf(cur)
+        val items = (0 until n).map { player.getMediaItemAt(it) }
+        val head = if (reshuffle || pos < 0) listOf(cur) else order.subList(0, pos + 1)
+        val headSet = head.toSet()
+        val queued = (0 until n).filter { items[it].isQueued && it !in headSet }
+        var rest = (if (reshuffle || pos < 0) (0 until n).toList() else order.subList(pos + 1, order.size))
+            .filter { it !in headSet && !items[it].isQueued }
+        if (reshuffle) rest = rest.filterNot { items[it].isAutoplay }.shuffled() + rest.filter { items[it].isAutoplay }.shuffled()
+        val wanted = head + queued + rest
+        if (wanted == order || wanted.size != n) return
+        player.setShuffleOrder(AppendingShuffleOrder(ShuffleOrder.DefaultShuffleOrder(wanted.toIntArray(), Random.nextLong())))
+    }
+
+    /**
      * Spotify-style autoplay: when at most [AUTOPLAY_WHEN_LEFT] tracks are left (repeat off),
      * append recommendations for the queue's context, so playback just continues when the
      * playlist/album ends. Without a context (search, recently played) the last track seeds it.
      */
     private fun maybeAutoplay() {
-        if (!container.settings.autoplay.value || player.repeatMode != Player.REPEAT_MODE_OFF) return
+        if (player.repeatMode != Player.REPEAT_MODE_OFF) return
         if (player.mediaItemCount == 0 || autoplayJob?.isActive == true) return
         val indices = playOrder()
         val pos = indices.indexOf(player.currentMediaItemIndex).takeIf { it >= 0 } ?: return
@@ -221,7 +248,10 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
-            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) maybeAutoplay()
+            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
+                arrangeShuffle(reshuffle = false)
+                maybeAutoplay()
+            }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -234,6 +264,8 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            // Every press reshuffles what's left; current track stays put.
+            if (shuffleModeEnabled) arrangeShuffle(reshuffle = true)
             saveQueue()
             maybeAutoplay()
         }

@@ -93,6 +93,18 @@ class LibraryRepository(
     suspend fun search(query: String): SearchResults =
         SearchResults(tracks = timed("search '$query'") { core().searchTracks(query) }.map { it.toTrack() })
 
+    /**
+     * Shazam [pcm] (16 kHz mono) and map the hit to Spotify: Shazam's own Spotify link when it has
+     * one, else a search for "title artist". Null = Shazam didn't recognize it.
+     */
+    suspend fun shazam(pcm: ShortArray): ShazamResult? = withContext(Dispatchers.IO) {
+        val m = timed("shazam ${pcm.size / 16000}s") { core().shazam(pcm.toList()) } ?: return@withContext null
+        val linked = m.spotifyTrackId?.let { id -> runCatching { core().tracks(listOf(id)) }.getOrNull()?.map { it.toTrack() } }.orEmpty()
+        val searched = runCatching { search("${m.title} ${m.artist.substringBefore(" & ").substringBefore(" feat")}").tracks }
+            .getOrElse { if (linked.isEmpty()) throw it else emptyList() }
+        ShazamResult(m.title, m.artist, m.coverUrl, (linked + searched).distinctBy { it.id }.take(5))
+    }
+
     /** Playlists the user can add to: their own (owner unknown = assume editable). */
     fun editablePlaylists(username: String?): List<Collection> =
         cachedHome()?.playlists.orEmpty().filter { username == null || it.owner == null || it.owner == username }

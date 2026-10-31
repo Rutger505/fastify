@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -48,6 +49,7 @@ import com.rutger.fastify.data.Collection
 import com.rutger.fastify.ui.screens.ArtistScreen
 import com.rutger.fastify.ui.screens.CollectionScreen
 import com.rutger.fastify.ui.screens.DiagnosticsScreen
+import com.rutger.fastify.ui.screens.ShazamScreen
 import com.rutger.fastify.ui.screens.HomeScreen
 import com.rutger.fastify.ui.screens.LyricsScreen
 import com.rutger.fastify.ui.screens.MiniPlayer
@@ -123,8 +125,10 @@ fun FastifyNavHost() {
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route.orEmpty()
     val showChrome = route !in fullScreen
-    // The tab whose stack is showing: search when it's on the back stack, else home (the start).
-    val currentTab = remember(entry) { if (runCatching { nav.getBackStackEntry("search") }.isSuccess) "search" else "home" }
+    // The tab whose stack is showing: search/shazam when on the back stack, else home (the start).
+    val currentTab = remember(entry) {
+        listOf("search", "shazam").firstOrNull { runCatching { nav.getBackStackEntry(it) }.isSuccess } ?: "home"
+    }
 
     CompositionLocalProvider(LocalNavigator provides navigator) {
         Scaffold(
@@ -144,6 +148,12 @@ fun FastifyNavHost() {
                                 onClick = { navigator.searchFocusTick++; nav.selectTab("search", currentTab) },
                                 icon = { Icon(Icons.Default.Search, null) },
                                 label = { Text("Search") },
+                            )
+                            NavigationBarItem(
+                                selected = currentTab == "shazam",
+                                onClick = { nav.selectTab("shazam", currentTab) },
+                                icon = { Icon(Icons.Default.GraphicEq, null) },
+                                label = { Text("Shazam") },
                             )
                         }
                     }
@@ -166,6 +176,7 @@ fun FastifyNavHost() {
                 composable("home") { HomeScreen() }
                 composable("diagnostics") { DiagnosticsScreen(onBack = { nav.popBackStack() }) }
                 composable("search") { SearchScreen() }
+                composable("shazam") { ShazamScreen() }
                 composable("new") { NewReleasesScreen() }
                 composable(
                     "collection?c={c}",

@@ -120,7 +120,7 @@ fun SearchScreen() {
                     item { SectionHeader("Songs") }
                     itemsIndexed(results.tracks, key = { _, t -> "t" + t.id }) { i, t ->
                         TrackRow(t, playing = playerState.current?.id == t.id, onClick = { saveQuery(); c.player.play(results.tracks, i) },
-                            downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) })
+                            downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, onSwipeQueue = { c.player.addToQueue(t) })
                     }
                 }
                 if (results.albums.isNotEmpty()) {

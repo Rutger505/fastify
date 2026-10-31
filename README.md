@@ -88,3 +88,7 @@ Next: Spotify Connect, Android Auto, lyrics, full offline downloads, widget.
 
 librespot is an unofficial client. Spotify protocol changes can break it, and using it is
 against Spotify's terms of service.
+
+## License
+
+GPL-3.0 (see LICENSE). Song recognition (`rust/core/src/shazam/`) is ported from [SongRec](https://github.com/marin-m/SongRec) (GPL-3.0).
