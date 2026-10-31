@@ -70,6 +70,14 @@ fun HomeScreen() {
                     }) { Icon(Icons.AutoMirrored.Filled.Logout, "Log out") }
                 }
             }
+            // TEST: remove after verifying the auto-update on the phone.
+            item {
+                Text(
+                    "Update test: running ${com.rutger.fastify.BuildConfig.VERSION_NAME} (${com.rutger.fastify.BuildConfig.VERSION_CODE})",
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
             item { UpdateCard(c.updater) }
             state.error?.let { err ->
                 item {
