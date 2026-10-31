@@ -29,6 +29,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
@@ -70,6 +72,10 @@ class Navigator(private val nav: NavHostController) {
     fun openLyrics() = nav.navigate("lyrics")
     fun openDiagnostics() = nav.navigate("diagnostics")
     fun back() = nav.popBackStack()
+
+    /** Bumped on every Search tab tap; SearchScreen focuses its field when it changes. */
+    var searchFocusTick by mutableIntStateOf(0)
+        internal set
 
     /** From the player (or lyrics) the destination replaces it, like Spotify closing now-playing. */
     private fun go(route: String) {
@@ -135,7 +141,7 @@ fun FastifyNavHost() {
                             )
                             NavigationBarItem(
                                 selected = currentTab == "search",
-                                onClick = { nav.selectTab("search", currentTab) },
+                                onClick = { navigator.searchFocusTick++; nav.selectTab("search", currentTab) },
                                 icon = { Icon(Icons.Default.Search, null) },
                                 label = { Text("Search") },
                             )

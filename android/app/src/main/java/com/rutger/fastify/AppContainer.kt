@@ -9,6 +9,7 @@ import com.rutger.fastify.data.LibraryRepository
 import com.rutger.fastify.data.Settings
 import com.rutger.fastify.data.SnapshotStore
 import com.rutger.fastify.data.PlayHistory
+import com.rutger.fastify.data.SearchHistory
 import com.rutger.fastify.playback.PlayerConnection
 import com.rutger.fastify.playback.Prefetcher
 import com.rutger.fastify.playback.QueueStore
@@ -43,6 +44,7 @@ class AppContainer(val app: Application) {
 
     val auth by lazy { AuthManager(app, { http }, { core }) }
     val history by lazy { PlayHistory(File(app.filesDir, "history.json")) }
+    val searchHistory by lazy { SearchHistory(File(app.filesDir, "search_history.json")) }
     val snapshots by lazy { SnapshotStore(File(app.filesDir, "snapshots")) }
     val library by lazy { LibraryRepository({ core }, snapshots, history) }
     val queueStore by lazy { QueueStore(File(app.filesDir, "queue.json")) }
