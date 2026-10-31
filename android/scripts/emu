@@ -10,6 +10,7 @@
 #   EMU_QUICKBOOT=1       opt-in snapshot boot: down saves (1-3 min), start/up loads (~30s)
 #   emu status            lease holder, emulator state, other emulators/builds, memory
 #   emu build [debug|release]   Gradle build (stops our emulator first: both together OOM the VM)
+#                         EMU_GRADLE_ARGS="--profile" etc. are passed to Gradle (report in app/../build/reports/profile)
 #   emu start | stop      boot (and wait) / shut down our emulator only
 #   emu install           install the x86_64 debug APK
 #   emu launch            force-stop + start the app, then 'emu ui'
@@ -240,7 +241,7 @@ build() {
   cd "$ANDROID_DIR"
   echo "sdk.dir=$ANDROID_HOME" >local.properties
   echo "building $variant ($abis), log: $BUILD_LOG (~1-2 min incremental, ~6 min clean)"
-  if ! FASTIFY_ABIS="$abis" ./gradlew --no-daemon "$task" >"$BUILD_LOG" 2>&1; then
+  if ! FASTIFY_ABIS="$abis" ./gradlew --no-daemon ${EMU_GRADLE_ARGS:-} "$task" >"$BUILD_LOG" 2>&1; then
     grep -E '^e: |error(\[|:)|What went wrong' -A4 "$BUILD_LOG" | head -60 || true
     tail -15 "$BUILD_LOG"
     die "build failed (full log: $BUILD_LOG)"
