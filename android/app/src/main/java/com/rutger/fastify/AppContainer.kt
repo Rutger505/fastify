@@ -56,9 +56,7 @@ class AppContainer(val app: Application) {
 
     /** MainActivity is started (visible). */
     val foreground = MutableStateFlow(false)
-    /** PlaybackService's player is playing. */
-    val playing = MutableStateFlow(false)
-    val updater by lazy { Updater(app, scope, { http }, foreground, playing) }
+    val updater by lazy { Updater(app, scope, { http }, foreground) }
 
     private val sessionPrefs by lazy { app.getSharedPreferences("session", android.content.Context.MODE_PRIVATE) }
     private val _username by lazy { MutableStateFlow(sessionPrefs.getString("username", null)) }

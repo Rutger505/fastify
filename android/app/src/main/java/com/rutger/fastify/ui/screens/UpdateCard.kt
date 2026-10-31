@@ -25,8 +25,12 @@ fun UpdateCard(updater: Updater) {
     when (val s = status) {
         is UpdateStatus.Ready -> UpdateRow(
             "Update ${s.release.versionName} ready",
-            if (s.silent) "Installs by itself when Fastify is in the background and not playing."
-            else "Needs one tap: Android asks to confirm the first in-app update.",
+            "Needs a tap: Android asks to confirm the first in-app update.",
+            "Install", updater::installNow,
+        )
+        is UpdateStatus.Scheduled -> UpdateRow(
+            "Update ${s.release.versionName} scheduled",
+            "Android installs it by itself when you're not using Fastify.",
             "Install now", updater::installNow,
         )
         is UpdateStatus.NeedsConfirmation -> UpdateRow(

@@ -15,6 +15,7 @@ class UpdateReceiver : BroadcastReceiver() {
             message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE),
             confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java),
             interactive = intent.getBooleanExtra(EXTRA_INTERACTIVE, false),
+            versionCode = intent.getIntExtra(EXTRA_VERSION, -1),
         )
     }
 
