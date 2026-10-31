@@ -33,6 +33,9 @@ class Diagnostics(private val c: AppContainer) {
             "permission=$perm enabled=${nm.areNotificationsEnabled()} channels=" +
                 nm.notificationChannels.joinToString { "${it.id}:${it.importance}" }
         }
+        probe("App update") {
+            c.updater.check().also { if (c.updater.status.value is com.rutger.fastify.update.UpdateStatus.Failed) error(it) }
+        }
         probe("Librespot session") { c.core.username().also { user = it }.let { "user=$it" } }
         var firstPlaylist: String? = null
         probe("Playlists (rootlist)") {

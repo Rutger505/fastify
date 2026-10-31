@@ -91,6 +91,7 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         autoplayJob?.cancel()
         saveQueue()
+        container.playing.value = false
         session?.release()
         session = null
         player.release()
@@ -228,6 +229,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            container.playing.value = isPlaying
             if (!isPlaying) saveQueue() else prefetchUpcoming()
         }
 

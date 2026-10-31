@@ -18,6 +18,7 @@ class FastifyApp : Application(), SingletonImageLoader.Factory {
         com.rutger.fastify.diag.AppLog.init(this)
         container = AppContainer(this)
         container.warmUp()
+        container.updater.start()
     }
 
     // Artwork is cache-first too: 256 MB on disk, so covers render without network on launch.

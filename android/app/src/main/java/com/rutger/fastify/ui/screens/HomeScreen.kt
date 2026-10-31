@@ -70,6 +70,7 @@ fun HomeScreen() {
                     }) { Icon(Icons.AutoMirrored.Filled.Logout, "Log out") }
                 }
             }
+            item { UpdateCard(c.updater) }
             state.error?.let { err ->
                 item {
                     ErrorCard(

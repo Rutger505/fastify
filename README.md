@@ -57,6 +57,21 @@ On the OpenClaw VM, build and test in the headless emulator with `android/script
 parallel agent threads don't fight over the emulator, and it never touches other emulators.
 See the header of the script.
 
+## Updates
+
+The app updates itself from the CDN (`update/Updater.kt`). It checks `version.json` at launch, when it
+comes to the foreground (at most every 30 min) and every 6 h. It then downloads the APK, checks the
+sha256 and installs it with `PackageInstaller`. Once Fastify is the installer of record (after the
+first update, which Android asks you to confirm), updates install silently. Silent installs wait until
+the app has been in the background and not playing for 2 min, because an install kills the process.
+Home shows a card while an update is ready or failed. Diagnostics shows the full updater state.
+
+- `versionCode` is the commit count (`git rev-list --count HEAD`), so every commit is newer.
+- Publish: `scripts/publish` uploads `fastify-<versionCode>.apk`, `fastify.apk` and then `version.json`,
+  and verifies each one. It refuses dirty builds and versionCodes that aren't newer.
+- Updates only install over the same signing key (`~/.local/share/android/debug.keystore` on the VM).
+- Debug builds only update when built with `FASTIFY_UPDATE_URL=<base url>`.
+
 `vergen` is pinned to 9.0.6 in `Cargo.lock`, because 9.1 breaks librespot-core 0.8's build script.
 
 ## MVP scope

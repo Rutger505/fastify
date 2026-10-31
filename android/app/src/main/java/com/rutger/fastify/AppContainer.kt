@@ -13,6 +13,7 @@ import com.rutger.fastify.playback.PlayerConnection
 import com.rutger.fastify.playback.Prefetcher
 import com.rutger.fastify.playback.QueueStore
 import com.rutger.fastify.playback.StreamPool
+import com.rutger.fastify.update.Updater
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -50,6 +51,12 @@ class AppContainer(val app: Application) {
     val player by lazy { PlayerConnection(app) }
     val downloads by lazy { Downloads(app, scope, { core }, library) }
     val settings by lazy { Settings(app) }
+
+    /** MainActivity is started (visible). */
+    val foreground = MutableStateFlow(false)
+    /** PlaybackService's player is playing. */
+    val playing = MutableStateFlow(false)
+    val updater by lazy { Updater(app, scope, { http }, foreground, playing) }
 
     private val sessionPrefs by lazy { app.getSharedPreferences("session", android.content.Context.MODE_PRIVATE) }
     private val _username by lazy { MutableStateFlow(sessionPrefs.getString("username", null)) }

@@ -43,12 +43,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        container.foreground.value = true
+        container.updater.onForeground()
         // Binding the session early lets the service restore and prepare the last queue right away.
         if (container.auth.isLoggedIn) container.player.connect()
     }
 
     override fun onStop() {
         container.player.disconnect()
+        container.foreground.value = false
         super.onStop()
     }
 }

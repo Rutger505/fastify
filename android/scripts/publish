@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Publish a release APK to the CDN for the in-app updater (app/.../update/Updater.kt).
+#
+#   scripts/publish [apk]     default: app/build/outputs/apk/release/app-release.apk
+#
+# Uploads, in this order, so version.json never points at a missing or partial file:
+#   fastify-<versionCode>.apk   what the app downloads (named by version, never overwritten)
+#   fastify.apk                 stable link for manual installs
+#   version.json                {versionCode, versionName, apk, sha256, size}
+# Each upload is verified by downloading it again. Refuses dirty builds and versionCodes that
+# are not newer than the published one (FORCE=1 overrides). Keeps the last 3 versioned APKs.
+#
+# Updates only install over a build signed with the same key: ~/.local/share/android/debug.keystore.
+set -euo pipefail
+
+ANDROID_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+APK="${1:-$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk}"
+DEST="${FASTIFY_CDN_DEST:-rcdn/artifacts/fastify}"
+URL="${FASTIFY_CDN_URL:-https://cdn.rutgerpronk.com/artifacts/fastify}"
+ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/share/android-sdk}"
+AAPT2="$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
+TMP="$HOME/Temporary/fastify-publish"
+KEEP=3
+
+die() { echo "publish: $*" >&2; exit 1; }
+[ -f "$APK" ] || die "no APK at $APK (EMU_OWNER=<id> scripts/emu build release)"
+
+badging="$("$AAPT2" dump badging "$APK" | head -1)"
+code="$(sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" <<<"$badging")"
+name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"$badging")"
+[ -n "$code" ] && [ -n "$name" ] || die "could not read version from: $badging"
+case "$name" in *dirty*) [ -n "${FORCE:-}" ] || die "$name is a dirty build: commit first (FORCE=1 overrides)";; esac
+
+published="$(curl -fsS -H 'Cache-Control: no-cache' "$URL/version.json" 2>/dev/null | sed -n 's/.*"versionCode": *\([0-9]*\).*/\1/p' || true)"
+if [ -n "$published" ] && [ "$code" -le "$published" ] && [ -z "${FORCE:-}" ]; then
+  die "versionCode $code is not newer than published $published (FORCE=1 overrides)"
+fi
+
+sha="$(sha256sum "$APK" | cut -d' ' -f1)"
+size="$(stat -c %s "$APK")"
+versioned="fastify-$code.apk"
+mkdir -p "$TMP"
+
+upload() { # local remote-name
+  mcli cp --quiet "$1" "$DEST/$2" >/dev/null
+  local got
+  got="$(curl -fsS -H 'Cache-Control: no-cache' "$URL/$2" | sha256sum | cut -d' ' -f1)"
+  [ "$got" = "$(sha256sum "$1" | cut -d' ' -f1)" ] || die "verify $URL/$2 failed: sha256 $got"
+}
+
+upload "$APK" "$versioned"
+upload "$APK" fastify.apk
+printf '{"versionCode": %s, "versionName": "%s", "apk": "%s", "sha256": "%s", "size": %s}\n' \
+  "$code" "$name" "$versioned" "$sha" "$size" >"$TMP/version.json"
+upload "$TMP/version.json" version.json
+
+# Prune old versioned APKs (newest $KEEP stay, so a phone mid-download still finds its file).
+mcli ls "$DEST/" | grep -o 'fastify-[0-9]*\.apk' | sort -t- -k2 -n | head -n -"$KEEP" |
+  while read -r old; do mcli rm --quiet "$DEST/$old" >/dev/null && echo "pruned $old"; done
+
+echo "published $name ($code) sha256=$sha"
+echo "$URL/fastify.apk"

@@ -12,6 +12,16 @@ val gitDescribe = providers.exec {
     isIgnoreExitValue = true
 }.standardOutput.asText.map { it.trim().ifEmpty { "dev" } }
 
+// Every commit on main is a new versionCode, so the in-app updater sees each published build as newer.
+val commitCount = providers.exec {
+    commandLine("git", "rev-list", "--count", "HEAD")
+}.standardOutput.asText.map { it.trim().toInt() }
+
+// Where the in-app updater looks for version.json (android/scripts/publish). Debug builds only
+// update when FASTIFY_UPDATE_URL is set, so emulator builds never pull the arm64 release.
+val releaseUpdateUrl = "https://cdn.rutgerpronk.com/artifacts/fastify/"
+val debugUpdateUrl = providers.environmentVariable("FASTIFY_UPDATE_URL").orElse("")
+
 android {
     namespace = "com.rutger.fastify"
     compileSdk = 37
@@ -20,13 +30,17 @@ android {
         applicationId = "com.rutger.fastify"
         minSdk = 35
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.3.0+" + gitDescribe.get()
+        versionCode = commitCount.get()
+        versionName = "0.4.0+" + gitDescribe.get()
         ndk { abiFilters += (providers.environmentVariable("FASTIFY_ABIS").orNull ?: "arm64-v8a").split(" ") }
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "UPDATE_URL", "\"${debugUpdateUrl.get()}\"")
+        }
         release {
+            buildConfigField("String", "UPDATE_URL", "\"$releaseUpdateUrl\"")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
