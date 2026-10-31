@@ -1,5 +1,6 @@
 package com.rutger.fastify.ui.screens
 
+import com.rutger.fastify.ui.fast
 import android.text.Html
 import java.text.NumberFormat
 import androidx.compose.animation.animateContentSize
@@ -125,13 +126,13 @@ fun ArtistScreen(artistId: String) {
                         t, playing = playerState.current?.id == t.id, onClick = { c.player.play(top, i, contextUri = "spotify:artist:$artistId") },
                         downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, number = i + 1,
                         trailing = artist.playcounts[t.id]?.let { streamsFormat.format(it) },
-                        modifier = Modifier.animateItem(),
+                        modifier = Modifier.animateItem(fast(), fast(), fast()),
                     )
                 }
                 if (top.size > POPULAR_STEP) {
                     // "Show less" stays on the left, "Show more" (5 at a time) on the right.
                     item(key = "popular_more") {
-                        Row(Modifier.fillMaxWidth().animateItem().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().animateItem(fast(), fast(), fast()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (popularShown > POPULAR_STEP) {
                                 TextButton(onClick = { popularShown = POPULAR_STEP }) { Text("Show less") }
                             }

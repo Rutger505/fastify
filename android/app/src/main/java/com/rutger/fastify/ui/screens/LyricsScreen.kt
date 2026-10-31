@@ -1,5 +1,7 @@
 package com.rutger.fastify.ui.screens
 
+import com.rutger.fastify.ui.fastScrollToItem
+import com.rutger.fastify.ui.fast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -126,7 +128,7 @@ private fun LyricsLines(lyrics: LyricsData, position: Long, onSeek: (Long) -> Un
     val listState = rememberLazyListState()
     LaunchedEffect(current) {
         // Keep the current line in the upper third, like Spotify.
-        if (current >= 0) listState.animateScrollToItem((current - 2).coerceAtLeast(0))
+        if (current >= 0) listState.fastScrollToItem((current - 2).coerceAtLeast(0))
     }
     LazyColumn(state = listState, contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp), modifier = Modifier.fillMaxSize()) {
         itemsIndexed(lines) { i, line ->
@@ -137,6 +139,7 @@ private fun LyricsLines(lyrics: LyricsData, position: Long, onSeek: (Long) -> Un
                     i < current -> Color.White.copy(alpha = 0.55f)
                     else -> Color.Black.copy(alpha = 0.55f)
                 },
+                animationSpec = fast(),
                 label = "lyric",
             )
             Text(

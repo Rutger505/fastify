@@ -1,5 +1,6 @@
 package com.rutger.fastify.ui.screens
 
+import com.rutger.fastify.ui.fast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.fadeIn
@@ -7,7 +8,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -145,11 +145,11 @@ fun SwipeToSkip(player: PlayerConnection, modifier: Modifier = Modifier, content
                         else -> 0
                     }
                     if (dir == 0) {
-                        animate(drag, 0f) { v, _ -> drag = v }
+                        animate(drag, 0f, animationSpec = fast()) { v, _ -> drag = v }
                     } else {
-                        animate(drag, dir * w, animationSpec = tween(120)) { v, _ -> drag = v }
+                        animate(drag, dir * w, animationSpec = fast(70)) { v, _ -> drag = v }
                         if (dir < 0) player.next() else player.previousTrack()
-                        animate(-dir * w, 0f, animationSpec = tween(200)) { v, _ -> drag = v }
+                        animate(-dir * w, 0f, animationSpec = fast()) { v, _ -> drag = v }
                     }
                 },
             ),
@@ -177,7 +177,7 @@ private fun LyricsPreview(trackId: String?, onOpen: () -> Unit) {
         AnimatedContent(
             targetState = current,
             transitionSpec = {
-                (slideInVertically { it } + fadeIn()) togetherWith (slideOutVertically { -it } + fadeOut())
+                (slideInVertically(fast()) { it } + fadeIn(fast())) togetherWith (slideOutVertically(fast()) { -it } + fadeOut(fast()))
             },
             label = "lyric line",
         ) { i ->
@@ -233,7 +233,7 @@ fun PlayerScreen(onClose: () -> Unit) {
                 state = rememberDraggableState { dragY = (dragY + it).coerceAtLeast(0f) },
                 onDragStopped = { velocity ->
                     if (dragY > height * CLOSE_FRACTION || velocity > SWIPE_VELOCITY) {
-                        animate(dragY, height.toFloat(), animationSpec = tween(150)) { v, _ -> dragY = v }
+                        animate(dragY, height.toFloat(), animationSpec = fast()) { v, _ -> dragY = v }
                         onClose()
                     } else {
                         animate(dragY, 0f) { v, _ -> dragY = v }

@@ -85,10 +85,9 @@ val LocalNavigator = staticCompositionLocalOf<Navigator> { error("no Navigator")
 // Screen transitions: pages slide in from the right and back out to the right (the page below
 // moves along), the player and lyrics slide up from the bottom and back down. No scaling/fading,
 // also not for predictive back (system back gesture/button).
-private const val NAV_MS = 300
-private val slideSpec = tween<IntOffset>(NAV_MS)
+private val slideSpec = fast<IntOffset>()
 /** Keeps the page under the player in place (and visible) while the player slides over it. */
-private val stay = fadeOut(tween(durationMillis = 1, delayMillis = NAV_MS))
+private val stay = fadeOut(tween(durationMillis = 1, delayMillis = ANIM_MS - 1))
 
 private val NavBackStackEntry.isFullScreen get() = destination.route in fullScreen
 

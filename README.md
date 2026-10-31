@@ -31,6 +31,11 @@ desktop client id, the same way librespot does.
 5. **Warm session.** The Spotify session connects in parallel with the first frame, not after it.
 6. **Low start threshold.** Playback starts with 250 ms buffered.
 
+## UI rules
+
+- Animations last at most 150 ms (`ANIM_MS` in `ui/Motion.kt`), everywhere in the app. Use `fast()` for every animationSpec instead of Compose/Material defaults. Exception until material3 1.5 is stable: Material's internal motion (bottom sheets), because `MaterialTheme(motionScheme = …)` is internal in 1.4.0.
+- Page/back transitions slide (pages horizontally, player/lyrics vertically), also for predictive back. No scaling.
+
 ## Build
 
 Requirements: Rust (stable), `cargo-ndk`, Android SDK 37, NDK r30, JDK 17.
