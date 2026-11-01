@@ -18,7 +18,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -40,13 +43,23 @@ data class PlayerUiState(
     /** Queue indices added by hand. */
     val queued: Set<Int> = emptySet(),
     val error: String? = null,
+    /** Name of the Spotify Connect device being controlled, null = playing on this phone. */
+    val remoteDevice: String? = null,
 )
 
-/** UI-side handle to the playback service through a MediaController. Main thread only. */
-class PlayerConnection(private val context: Context) {
+/**
+ * UI-side handle to the playback service through a MediaController. Main thread only.
+ * While [remote] controls another Spotify Connect device, [state] and the commands go there.
+ */
+class PlayerConnection(private val context: Context, val remote: ConnectRemote) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(PlayerUiState())
-    val state: StateFlow<PlayerUiState> = _state
+    val state: StateFlow<PlayerUiState> = combine(_state, remote.ui) { local, r -> r ?: local }
+        .stateIn(scope, SharingStarted.Eagerly, PlayerUiState())
+
+    /** Local playback state, also while a remote device is controlled. */
+    val localState: StateFlow<PlayerUiState> = _state
+    private val remoteOn get() = remote.target.value != null
 
     private var future: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -90,32 +103,41 @@ class PlayerConnection(private val context: Context) {
      * [shuffle] null keeps the current shuffle mode, like Spotify. Shuffle is switched off and
      * back on around the swap so the service reshuffles with the start track first.
      */
-    fun play(tracks: List<Track>, startIndex: Int = -1, shuffle: Boolean? = null, contextUri: String? = null) = withController {
+    fun play(tracks: List<Track>, startIndex: Int = -1, shuffle: Boolean? = null, contextUri: String? = null) {
+        if (remoteOn && tracks.isNotEmpty()) {
+            val sh = shuffle ?: state.value.shuffle
+            val start = if (startIndex >= 0) startIndex.coerceAtMost(tracks.lastIndex) else if (sh) tracks.indices.random() else 0
+            return remote.play(tracks, start, shuffle, contextUri)
+        }
+        playLocal(tracks, startIndex, shuffle, contextUri)
+    }
+
+    private fun playLocal(tracks: List<Track>, startIndex: Int, shuffle: Boolean?, contextUri: String?, positionMs: Long = 0) = withController {
         if (tracks.isEmpty()) return@withController
         val sh = shuffle ?: shuffleModeEnabled
         val start = if (startIndex >= 0) startIndex.coerceAtMost(tracks.lastIndex) else if (sh) tracks.indices.random() else 0
         setContext(contextUri)
         shuffleModeEnabled = false
-        setMediaItems(tracks.map { it.toMediaItem() }, start, 0)
+        setMediaItems(tracks.map { it.toMediaItem() }, start, positionMs)
         shuffleModeEnabled = sh
         prepare()
         play()
     }
 
-    fun togglePlay() = withController {
+    fun togglePlay() = if (remoteOn) remote.togglePlay() else withController {
         if (playbackState == Player.STATE_IDLE) prepare()
         if (isPlaying) pause() else play()
     }
 
-    fun next() = withController { seekToNext() }
-    fun previous() = withController { seekToPrevious() }
+    fun next() = if (remoteOn) remote.next() else withController { seekToNext() }
+    fun previous() = if (remoteOn) remote.previous() else withController { seekToPrevious() }
 
     /** Always the previous track (no restart-current-track rule), for the mini player swipe. */
-    fun previousTrack() = withController { seekToPreviousMediaItem() }
-    fun seekTo(ms: Long) = withController { seekTo(ms) }
-    fun playQueueIndex(index: Int) = withController { seekTo(index, 0); play() }
-    fun toggleShuffle() = withController { shuffleModeEnabled = !shuffleModeEnabled }
-    fun cycleRepeat() = withController {
+    fun previousTrack() = if (remoteOn) remote.previous() else withController { seekToPreviousMediaItem() }
+    fun seekTo(ms: Long) = if (remoteOn) remote.seekTo(ms) else withController { seekTo(ms) }
+    fun playQueueIndex(index: Int) = if (remoteOn) remote.playQueueIndex(index) else withController { seekTo(index, 0); play() }
+    fun toggleShuffle() = if (remoteOn) remote.toggleShuffle() else withController { shuffleModeEnabled = !shuffleModeEnabled }
+    fun cycleRepeat() = if (remoteOn) remote.cycleRepeat() else withController {
         repeatMode = when (repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
             Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
@@ -123,7 +145,45 @@ class PlayerConnection(private val context: Context) {
         }
     }
 
-    fun stopAndClear() = withController { setContext(null); stop(); clearMediaItems() }
+    fun stopAndClear() {
+        if (remoteOn) { remote.pause(); remote.detach() }
+        withController { setContext(null); stop(); clearMediaItems() }
+    }
+
+    /**
+     * Play on this phone. From a remote device: pause it and continue its track (same position)
+     * and upcoming queue here. Otherwise just stop controlling it.
+     */
+    fun playHere() {
+        if (!remoteOn) return
+        scope.launch {
+            val h = remote.handoff()
+            remote.pause()
+            remote.detach()
+            if (h == null || h.tracks.isEmpty()) return@launch
+            playLocal(h.tracks, 0, shuffle = false, contextUri = h.contextUri, positionMs = h.positionMs)
+        }
+    }
+
+    /** Hand local playback to Connect device [deviceId]: same queue and position, phone pauses. */
+    fun playOn(deviceId: String) {
+        val s = _state.value
+        val active = remote.state.value?.activeDeviceId
+        when {
+            // Already controlling something: move it between remote devices.
+            remoteOn && active != null && active != deviceId -> remote.transfer(deviceId)
+            remoteOn || s.current == null -> remote.attach(deviceId)
+            else -> {
+                val order = s.order.takeIf { it.size == s.queue.size } ?: s.queue.indices.toList()
+                val from = order.indexOf(s.index).coerceAtLeast(0)
+                val upcoming = order.drop(from).take(HANDOFF_TRACKS).map { s.queue[it] }
+                val position = position()
+                withController { pause() }
+                remote.attach(deviceId)
+                remote.play(upcoming, 0, shuffle = false, contextUri = null, positionMs = position, to = deviceId)
+            }
+        }
+    }
 
     private fun MediaController.setContext(uri: String?) {
         sendCustomCommand(
@@ -134,7 +194,7 @@ class PlayerConnection(private val context: Context) {
 
     // "Add to queue" items play after the current track and earlier queued ones, before the rest
     // of the playlist (like Spotify). In shuffle mode the service keeps them in that spot.
-    fun addToQueue(track: Track) = withController {
+    fun addToQueue(track: Track) = if (remoteOn) remote.addToQueue(track) else withController {
         if (mediaItemCount == 0) {
             setMediaItem(track.toMediaItem())
             prepare()
@@ -145,12 +205,12 @@ class PlayerConnection(private val context: Context) {
         addMediaItem(at, track.toMediaItem(queued = true))
     }
 
-    fun removeFromQueue(index: Int) = withController {
+    fun removeFromQueue(index: Int) = if (remoteOn) remote.removeFromQueue(index) else withController {
         if (index in 0 until mediaItemCount && index != currentMediaItemIndex) removeMediaItem(index)
     }
 
     /** Live position, for lyrics sync (the state ticker only updates twice a second). */
-    fun position(): Long = controller?.currentPosition ?: _state.value.positionMs
+    fun position(): Long = if (remoteOn) remote.position() else controller?.currentPosition ?: _state.value.positionMs
 
     private fun withController(block: MediaController.() -> Unit) {
         val c = controller
@@ -162,6 +222,8 @@ class PlayerConnection(private val context: Context) {
 
     private fun refresh(full: Boolean) {
         val c = controller ?: return
+        // Playing on the phone (notification, Bluetooth, playHere) ends remote control.
+        if (c.isPlaying && !_state.value.isPlaying) remote.detach()
         val queue = if (full) (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toTrack() } else _state.value.queue
         val autoplayFrom = if (full) (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).isAutoplay } ?: -1
         else _state.value.autoplayFrom
@@ -201,6 +263,11 @@ class PlayerConnection(private val context: Context) {
             i = t.getNextWindowIndex(i, Player.REPEAT_MODE_OFF, c.shuffleModeEnabled)
         }
         return out
+    }
+
+    private companion object {
+        /** Upcoming tracks sent along when handing playback to another device. */
+        const val HANDOFF_TRACKS = 100
     }
 
     private fun describe(e: PlaybackException): String =

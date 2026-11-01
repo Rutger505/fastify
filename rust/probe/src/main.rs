@@ -32,6 +32,59 @@ async fn main() {
         FastifyCore::new(dir.clone(), format!("{dir}/cache"), 512 * 1024 * 1024).expect("core");
     match cmd.as_str() {
         "login" => login(core).await,
+        "connect" => {
+            // Print the Connect cluster for <secs> seconds (default 20).
+            let secs: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
+            let end = Instant::now() + std::time::Duration::from_secs(secs);
+            let mut v = 0;
+            while Instant::now() < end {
+                match core.clone().connect_watch(v).await {
+                    Ok(s) => {
+                        v = s.version;
+                        println!("v{} ready={} err={:?} active={:?} playing={} pos={}/{} shuffle={} repeat={}/{} ctx={:?} rev={}",
+                            s.version, s.ready, s.error, s.active_device_id, s.is_playing, s.position_ms, s.duration_ms,
+                            s.shuffle, s.repeat_context, s.repeat_track, s.context_uri, s.queue_revision);
+                        for d in &s.devices { println!("  device {} {:?} {} vol={} can_play={}", d.id, d.name, d.kind, d.volume, d.can_play); }
+                        println!("  track {:?}", s.track);
+                        println!("  prev {} next {}: {:?}", s.prev_tracks.len(), s.next_tracks.len(), s.next_tracks.iter().take(4).collect::<Vec<_>>());
+                    }
+                    Err(e) => { println!("ERR {e}"); break; }
+                }
+            }
+        }
+        "cmd" => {
+            // cmd <device> pause|resume|next|prev|seek <ms>|shuffle <bool>|queue <track>|play <ctx|-> <track,...> <i>|volume <0..65535>|transfer <to>
+            use fastify_core::RemoteCommand as C;
+            let dev = args[3].clone();
+            let a = |i: usize| args.get(i).cloned().unwrap_or_default();
+            let res = if args[4] == "transfer" {
+                core.clone().connect_transfer(dev, a(5)).await
+            } else {
+                let c = match args[4].as_str() {
+                    "pause" => C::Pause,
+                    "resume" => C::Resume,
+                    "next" => C::SkipNext,
+                    "prev" => C::SkipPrev,
+                    "seek" => C::SeekTo { position_ms: a(5).parse().unwrap() },
+                    "shuffle" => C::SetShuffle { on: a(5) == "true" },
+                    "repeat" => C::SetRepeat { context: a(5) == "true", track: a(6) == "true" },
+                    "queue" => C::AddToQueue { track_id: a(5) },
+                    "play" => C::Play {
+                        context_uri: Some(a(5)).filter(|s| s != "-"),
+                        track_ids: a(6).split(',').map(String::from).collect(),
+                        start_index: a(7).parse().unwrap_or(0),
+                        position_ms: a(8).parse().unwrap_or(0),
+                        shuffle: None,
+                    },
+                    "volume" => C::Volume { volume: a(5).parse().unwrap() },
+                    other => panic!("unknown cmd {other}"),
+                };
+                // Commands need a registered connection: start the observer first.
+                let _ = core.clone().connect_watch(0).await;
+                core.clone().connect_command(dev, c).await
+            };
+            println!("{:?}", res.map_err(|e| e.to_string()));
+        }
         "run" => run(core).await,
         "raw" => {
             let path = args.get(3).expect("path");

@@ -4,6 +4,7 @@
 //! audio keys, CDN downloads, decryption and the audio file cache.
 
 mod catalog;
+mod connect;
 mod edit;
 mod error;
 mod keystore;
@@ -27,6 +28,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 pub use catalog::{AlbumPage, ArtistPage, LyricLine, Lyrics};
+pub use connect::{RemoteCommand, RemoteDevice, RemoteState, RemoteTrack};
 pub use error::CoreError;
 use keystore::{KeyEntry, KeyStore};
 pub use library::{AlbumInfo, ArtistRef, PlaylistInfo, TrackInfo};
@@ -60,6 +62,7 @@ pub struct FastifyCore {
     device_id: String,
     /// Downloaded tracks: encrypted audio files outside the LRU cache, never evicted.
     downloads: PathBuf,
+    connect: connect::Hub,
 }
 
 #[uniffi::export]
@@ -99,6 +102,7 @@ impl FastifyCore {
             session: Mutex::new(None),
             device_id,
             downloads,
+            connect: connect::Hub::new(),
         }))
     }
 
@@ -201,6 +205,43 @@ impl FastifyCore {
             })
             .await
             .map_err(CoreError::other)?
+    }
+
+    /// Spotify Connect: the account's devices and what the active one plays. Starts the observer
+    /// (and reconnects the session) when needed, then returns once the state's version is past
+    /// `after_version`, or after ~25 s with the unchanged state. Call in a loop while visible.
+    pub async fn connect_watch(self: Arc<Self>, after_version: u64) -> Result<RemoteState, CoreError> {
+        let this = self.clone();
+        self.rt
+            .spawn(async move {
+                let session = this.session().await?;
+                this.connect.ensure(&session);
+                Ok(this.connect.wait(after_version, Duration::from_secs(25)).await)
+            })
+            .await
+            .map_err(CoreError::other)?
+    }
+
+    /// Send a player command to Connect device `device_id`.
+    pub async fn connect_command(
+        self: Arc<Self>,
+        device_id: String,
+        command: RemoteCommand,
+    ) -> Result<(), CoreError> {
+        self.with_session(move |s| async move { connect::command(&s, &device_id, &command).await })
+            .await
+    }
+
+    /// Move playback between Connect devices.
+    pub async fn connect_transfer(
+        self: Arc<Self>,
+        from_device_id: String,
+        to_device_id: String,
+    ) -> Result<(), CoreError> {
+        self.with_session(move |s| async move {
+            connect::transfer(&s, &from_device_id, &to_device_id).await
+        })
+        .await
     }
 
     /// The user's playlists (rootlist, folders flattened).

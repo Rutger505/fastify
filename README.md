@@ -31,6 +31,18 @@ desktop client id, the same way librespot does.
 5. **Warm session.** The Spotify session connects in parallel with the first frame, not after it.
 6. **Low start threshold.** Playback starts with 250 ms buffered.
 
+## Spotify Connect
+
+- Remote control only, so far: `rust/core/src/connect.rs` registers a hidden, observe-only Connect
+  device over the dealer websocket, follows the account's device cluster and sends player commands
+  (`/connect-state/v1/player/command`) to the active device.
+- `ConnectRemote` attaches when another device plays and the phone doesn't; `PlayerConnection` then
+  routes the whole player UI (mini player, player, queue) there.
+- Devices button in the player: pick a device (hands the local queue + position over) or "This
+  phone" (takes the remote queue + position over).
+- Not yet: Fastify as a real Connect target, so other clients can't push playback to the phone.
+- Probe: `fastify-probe <dir> connect` prints the cluster, `cmd <device> pause|next|...` sends one.
+
 ## UI rules
 
 - Animations last at most 150 ms (`ANIM_MS` in `ui/Motion.kt`), everywhere in the app. Use `fast()` for every animationSpec instead of Compose/Material defaults. Exception until material3 1.5 is stable: Material's internal motion (bottom sheets), because `MaterialTheme(motionScheme = …)` is internal in 1.4.0.

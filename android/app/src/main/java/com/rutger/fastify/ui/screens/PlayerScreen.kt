@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -108,6 +109,7 @@ fun MiniPlayer(state: PlayerUiState, player: PlayerConnection, onOpen: () -> Uni
                 Icon(if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.isPlaying) "Pause" else "Play")
             }
         }
+        state.remoteDevice?.let { RemoteLabel(it, Modifier.padding(start = 62.dp, bottom = 4.dp)) }
         LinearProgressIndicator(
             progress = { if (state.durationMs > 0) state.positionMs.toFloat() / state.durationMs else 0f },
             modifier = Modifier.fillMaxWidth().height(2.dp),
@@ -116,6 +118,16 @@ fun MiniPlayer(state: PlayerUiState, player: PlayerConnection, onOpen: () -> Uni
             drawStopIndicator = {},
             gapSize = 0.dp,
         )
+    }
+}
+
+/** Green "Playing on <device>" line, like Spotify's Connect bar. */
+@Composable
+fun RemoteLabel(device: String, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Default.Devices, null, tint = Green, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Playing on $device", color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -216,6 +228,7 @@ fun PlayerScreen(onClose: () -> Unit) {
     val likedIds by c.library.likedIds.collectAsStateWithLifecycle()
     var showQueue by remember { mutableStateOf(false) }
     var showArtists by remember { mutableStateOf(false) }
+    var showDevices by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf<TrackMenu?>(null) }
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
@@ -348,6 +361,15 @@ fun PlayerScreen(onClose: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { if (track != null) nav.openLyrics() }) { Icon(Icons.Default.Lyrics, "Lyrics") }
             Spacer(Modifier.weight(1f))
+            Row(Modifier.clickable { showDevices = true }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                val remote = state.remoteDevice
+                Icon(Icons.Default.Devices, "Devices", tint = if (remote != null) Green else MaterialTheme.colorScheme.onSurface)
+                if (remote != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(remote, color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Spacer(Modifier.weight(1f))
             IconButton(onClick = { showQueue = true }) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue") }
         }
     }
@@ -401,6 +423,8 @@ fun PlayerScreen(onClose: () -> Unit) {
             }
         }
     }
+
+    if (showDevices) DevicesSheet(onDismiss = { showDevices = false })
 
     menu?.let { TrackMenuSheet(it, onDismiss = { menu = null }) }
 }

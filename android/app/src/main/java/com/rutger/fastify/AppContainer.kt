@@ -10,6 +10,7 @@ import com.rutger.fastify.data.SnapshotStore
 import com.rutger.fastify.data.PlayHistory
 import com.rutger.fastify.data.SearchHistory
 import com.rutger.fastify.data.ShazamHistory
+import com.rutger.fastify.playback.ConnectRemote
 import com.rutger.fastify.playback.PlayerConnection
 import com.rutger.fastify.playback.Prefetcher
 import com.rutger.fastify.playback.QueueStore
@@ -51,7 +52,8 @@ class AppContainer(val app: Application) {
     val queueStore by lazy { QueueStore(File(app.filesDir, "queue.json")) }
     val streams by lazy { StreamPool { core } }
     val prefetcher by lazy { Prefetcher(scope) { core } }
-    val player by lazy { PlayerConnection(app) }
+    val remote: ConnectRemote by lazy { ConnectRemote({ core }, { player.localState.value }) }
+    val player: PlayerConnection by lazy { PlayerConnection(app, remote) }
     val downloads by lazy { Downloads(app, scope, { core }, library) }
 
     /** MainActivity is started (visible). */
