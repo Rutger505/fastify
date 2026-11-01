@@ -78,16 +78,6 @@ The app updates itself from the CDN (`update/Updater.kt`), the way app stores do
 
 `vergen` is pinned to 9.0.6 in `Cargo.lock`, because 9.1 breaks librespot-core 0.8's build script.
 
-## MVP scope
-
-- OAuth login (PKCE, Custom Tab)
-- Home: recently played, Liked Songs, playlists, albums
-- Search: songs, albums, playlists
-- Player: queue, shuffle, repeat, seek, gapless next-track preloading
-- Media notification, lock screen, Bluetooth controls, playback resumption
-
-Next: Spotify Connect, Android Auto, lyrics, full offline downloads, widget.
-
 ## Caveats
 
 librespot is an unofficial client. Spotify protocol changes can break it, and using it is
