@@ -19,11 +19,26 @@ data class ShazamResult(
 )
 
 /** Recognized songs, newest first, capped. */
-class ShazamHistory(private val file: File) {
+class ShazamHistory(private val file: File, private val seenFile: File) {
     private val json = Json { ignoreUnknownKeys = true }
     private val serializer = ListSerializer(ShazamResult.serializer())
     private val _items = MutableStateFlow(runCatching { json.decodeFromString(serializer, file.readText()) }.getOrDefault(emptyList()))
     val items: StateFlow<List<ShazamResult>> = _items.asStateFlow()
+
+    /** [ShazamResult.at] of the newest result the Herkennen tab has shown (drives the tab badge). */
+    private val _seenAt = MutableStateFlow(
+        runCatching { seenFile.readText().trim().toLong() }.getOrElse { _items.value.firstOrNull()?.at ?: 0L },
+    )
+    val seenAt: StateFlow<Long> = _seenAt.asStateFlow()
+
+    @Synchronized
+    fun markSeen() {
+        val newest = _items.value.firstOrNull()?.at ?: return
+        if (newest <= _seenAt.value) return
+        _seenAt.value = newest
+        runCatching { seenFile.writeText(newest.toString()) }
+            .onFailure { com.rutger.fastify.diag.AppLog.w("ShazamHistory", "save seen failed", it) }
+    }
 
     @Synchronized
     fun record(r: ShazamResult) = save(listOf(r) + _items.value.filterNot { it.title == r.title && it.artist == r.artist }.take(MAX - 1))

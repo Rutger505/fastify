@@ -2,12 +2,19 @@ package com.rutger.fastify.ui.screens
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.VibrationEffect
+import android.os.VibratorManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -26,8 +34,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -41,22 +50,28 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.rutger.fastify.container
+import com.rutger.fastify.R
 import com.rutger.fastify.data.LibraryRepository
 import com.rutger.fastify.data.ShazamHistory
 import com.rutger.fastify.data.ShazamResult
 import com.rutger.fastify.diag.AppLog
+import com.rutger.fastify.container
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -74,29 +89,63 @@ sealed interface ShazamState {
 /**
  * Records 16 kHz mono from the mic and asks Shazam after 4, 8 and 12 s of audio, stopping at the
  * first match (Shazam usually knows a song within a few seconds).
+ *
+ * Activity-scoped (created in FastifyNavHost) so the tab and the stealth loader share one run.
+ * Stealth = started by double-tapping the bottom tab: a full-screen fake loading screen covers the
+ * app, the result comes as vibration (1 short = found, 2 = no match/failed), then Home shows.
  */
-class ShazamViewModel(private val repo: LibraryRepository, private val history: ShazamHistory) : ViewModel() {
+class ShazamViewModel(
+    private val app: Context,
+    private val repo: LibraryRepository,
+    private val history: ShazamHistory,
+) : ViewModel() {
     private val _state = MutableStateFlow<ShazamState>(ShazamState.Idle)
     val state: StateFlow<ShazamState> = _state
+    private val _stealth = MutableStateFlow(false)
+    val stealth: StateFlow<Boolean> = _stealth
+    /** Emits when a stealth run finished (not when cancelled); call [stealthFinished] after leaving. */
+    private val _stealthDone = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val stealthDone: SharedFlow<Unit> = _stealthDone
     private var job: Job? = null
 
-    fun start() {
+    /** A stealth start during a normal run turns that run stealth. */
+    fun start(stealth: Boolean = false) {
+        if (stealth) _stealth.value = true
         if (job?.isActive == true) return
         job = viewModelScope.launch {
             _state.value = ShazamState.Listening(0, false)
-            try {
-                _state.value = listen()?.let { history.record(it); ShazamState.Found(it) } ?: ShazamState.NoMatch
+            _state.value = try {
+                listen()?.let { history.record(it); ShazamState.Found(it) } ?: ShazamState.NoMatch
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 AppLog.w("Shazam", "recognize failed", e)
-                _state.value = ShazamState.Failed("${e.javaClass.simpleName}: ${e.message}")
+                ShazamState.Failed("${e.javaClass.simpleName}: ${e.message}")
+            }
+            if (_stealth.value) {
+                vibrate(found = _state.value is ShazamState.Found)
+                // The loader stays until the app has switched to Home (stealthFinished), so the
+                // Herkennen tab never flashes and doesn't mark the new result as seen.
+                _stealthDone.tryEmit(Unit)
             }
         }
     }
 
+    fun stealthFinished() {
+        _stealth.value = false
+    }
+
     fun stop() {
         job?.cancel()
+        _stealth.value = false
         _state.value = ShazamState.Idle
+    }
+
+    private fun vibrate(found: Boolean) {
+        val v = app.getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
+        v.vibrate(
+            if (found) VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE)
+            else VibrationEffect.createWaveform(longArrayOf(0, 80, 120, 80), -1),
+        )
     }
 
     @SuppressLint("MissingPermission") // checked by the screen before start()
@@ -134,10 +183,9 @@ class ShazamViewModel(private val repo: LibraryRepository, private val history: 
 }
 
 @Composable
-fun ShazamScreen() {
+fun ShazamScreen(vm: ShazamViewModel) {
     val ctx = LocalContext.current
     val c = ctx.container
-    val vm = viewModel { ShazamViewModel(c.library, c.shazamHistory) }
     val state by vm.state.collectAsStateWithLifecycle()
     val found by c.shazamHistory.items.collectAsStateWithLifecycle()
     val downloaded by c.downloads.trackIds.collectAsStateWithLifecycle()
@@ -152,28 +200,36 @@ fun ShazamScreen() {
     val onButton = {
         when {
             listening -> vm.stop()
-            ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED -> vm.start()
+            hasMic(ctx) -> vm.start()
             else -> askMic.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
         item {
-            Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                FilledIconButton(onClick = onButton, modifier = Modifier.size(140.dp)) {
-                    Icon(if (listening) Icons.Default.Stop else Icons.Default.GraphicEq, if (listening) "Stop" else "Listen", Modifier.size(72.dp))
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                FilledTonalButton(onClick = onButton, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
+                    Icon(if (listening) Icons.Default.Stop else Icons.Default.GraphicEq, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (listening) "Stop" else "Herkennen")
                 }
-                Spacer(Modifier.height(16.dp))
                 when (val s = state) {
-                    ShazamState.Idle -> Text("Tap to Shazam")
                     is ShazamState.Listening -> {
-                        Text(if (s.asking) "Asking Shazam… (${s.heardMs / 1000} s heard)" else "Listening… ${s.heardMs / 1000} s")
+                        Spacer(Modifier.height(12.dp))
+                        Text(if (s.asking) "Asking Shazam… (${s.heardMs / 1000} s heard)" else "Listening… ${s.heardMs / 1000} s",
+                            style = MaterialTheme.typography.bodyMedium)
                         Spacer(Modifier.height(8.dp))
-                        LinearProgressIndicator(progress = { s.heardMs / 12_000f }, modifier = Modifier.fillMaxWidth(0.6f))
+                        LinearProgressIndicator(progress = { s.heardMs / 12_000f }, modifier = Modifier.fillMaxWidth())
                     }
-                    ShazamState.NoMatch -> Text("No match after 12 s. Get closer to the speaker and try again.", textAlign = TextAlign.Center)
-                    is ShazamState.Found -> {}
-                    is ShazamState.Failed -> ErrorCard("Shazam failed", s.message, onRetry = onButton)
+                    ShazamState.NoMatch -> {
+                        Spacer(Modifier.height(12.dp))
+                        Text("No match after 12 s. Get closer to the speaker and try again.")
+                    }
+                    is ShazamState.Failed -> {
+                        Spacer(Modifier.height(12.dp))
+                        ErrorCard("Shazam failed", s.message, onRetry = onButton)
+                    }
+                    ShazamState.Idle, is ShazamState.Found -> {}
                 }
                 if (denied) Text("Microphone permission denied", color = MaterialTheme.colorScheme.error)
             }
@@ -192,19 +248,26 @@ fun ShazamScreen() {
             }
         }
         val past = found.filterNot { (state as? ShazamState.Found)?.result == it }
-        if (past.isNotEmpty()) {
-            item { SectionHeader("Shazamed") }
-            items(past, key = { "h" + it.at }) { r ->
+        if (found.isEmpty()) {
+            item {
+                Text("Nothing recognized yet", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        // Grouped per night out: a song at 02:00 belongs to the evening before.
+        past.groupBy { nightOf(it.at) }.forEach { (night, results) ->
+            item(key = "night$night") { SectionHeader(nightLabel(night)) }
+            items(results, key = { "h" + it.at }) { r ->
                 val t = r.tracks.firstOrNull()
+                val time = TIME.format(Instant.ofEpochMilli(r.at).atZone(ZoneId.systemDefault()))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
                         if (t != null) {
                             TrackRow(t, playing = playerState.current?.id == t.id, onClick = { c.player.play(listOf(t), 0) },
-                                downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) })
+                                downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, trailing = time)
                         } else {
                             Column(Modifier.padding(16.dp)) {
                                 Text(r.title)
-                                Text("${r.artist} · not on Spotify", style = MaterialTheme.typography.bodySmall)
+                                Text("${r.artist} · not on Spotify · $time", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
@@ -215,4 +278,43 @@ fun ShazamScreen() {
     }
 
     menu?.let { TrackMenuSheet(it, onDismiss = { menu = null }) }
+}
+
+/**
+ * Fake "app is loading" screen shown during a stealth run: logo + spinner, nothing about listening.
+ * Covers everything (taps included); back cancels the run.
+ */
+@Composable
+fun StealthLoader(onCancel: () -> Unit) {
+    BackHandler(onBack = onCancel)
+    Box(
+        Modifier.fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .clickable(interactionSource = null, indication = null) {},
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Image(painterResource(R.drawable.ic_launcher_foreground), null, Modifier.size(160.dp))
+            CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+        }
+    }
+}
+
+fun hasMic(ctx: Context) =
+    ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+private val TIME = DateTimeFormatter.ofPattern("HH:mm")
+private val DAY = DateTimeFormatter.ofPattern("EEE d MMM")
+private const val NIGHT_ENDS_HOUR = 6L
+
+private fun nightOf(at: Long): LocalDate =
+    Instant.ofEpochMilli(at).atZone(ZoneId.systemDefault()).minusHours(NIGHT_ENDS_HOUR).toLocalDate()
+
+private fun nightLabel(night: LocalDate): String {
+    val today = nightOf(System.currentTimeMillis())
+    return when (night) {
+        today -> "Today"
+        today.minusDays(1) -> "Yesterday"
+        else -> DAY.format(night)
+    }
 }

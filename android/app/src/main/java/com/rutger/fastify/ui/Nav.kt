@@ -1,6 +1,13 @@
 package com.rutger.fastify.ui
 
+import android.Manifest
 import android.net.Uri
+import android.os.SystemClock
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -22,6 +29,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -50,6 +59,9 @@ import com.rutger.fastify.ui.screens.ArtistScreen
 import com.rutger.fastify.ui.screens.CollectionScreen
 import com.rutger.fastify.ui.screens.DiagnosticsScreen
 import com.rutger.fastify.ui.screens.ShazamScreen
+import com.rutger.fastify.ui.screens.ShazamViewModel
+import com.rutger.fastify.ui.screens.StealthLoader
+import com.rutger.fastify.ui.screens.hasMic
 import com.rutger.fastify.ui.screens.HomeScreen
 import com.rutger.fastify.ui.screens.LyricsScreen
 import com.rutger.fastify.ui.screens.MiniPlayer
@@ -120,17 +132,35 @@ private fun Scope.popExit(): ExitTransition =
 fun FastifyNavHost() {
     val nav = rememberNavController()
     val navigator = remember(nav) { Navigator(nav) }
-    val player = LocalContext.current.container.player
+    val ctx = LocalContext.current
+    val c = ctx.container
+    val player = c.player
+    // Activity-scoped: shared by the Herkennen tab and the stealth loader.
+    val shazam = viewModel { ShazamViewModel(c.app, c.library, c.shazamHistory) }
+    val stealth by shazam.stealth.collectAsStateWithLifecycle()
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) shazam.start(stealth = true)
+    }
+    var lastShazamTap by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(shazam) {
+        shazam.stealthDone.collect { nav.switchTab("home"); shazam.stealthFinished() }
+    }
+    val shazamed by c.shazamHistory.items.collectAsStateWithLifecycle()
+    val seenAt by c.shazamHistory.seenAt.collectAsStateWithLifecycle()
+    val unseen = (shazamed.firstOrNull()?.at ?: 0L) > seenAt
     val playerState by player.state.collectAsStateWithLifecycle()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route.orEmpty()
     val showChrome = route !in fullScreen
+    // Anything newer than seenAt gets the tab badge; looking at the tab clears it.
+    LaunchedEffect(route, stealth, shazamed) { if (route == "shazam" && !stealth) c.shazamHistory.markSeen() }
     // The tab whose stack is showing: search/shazam when on the back stack, else home (the start).
     val currentTab = remember(entry) {
         listOf("search", "shazam").firstOrNull { runCatching { nav.getBackStackEntry(it) }.isSuccess } ?: "home"
     }
 
     CompositionLocalProvider(LocalNavigator provides navigator) {
+      Box(Modifier.fillMaxSize()) {
         Scaffold(
             bottomBar = {
                 if (showChrome) {
@@ -151,9 +181,19 @@ fun FastifyNavHost() {
                             )
                             NavigationBarItem(
                                 selected = currentTab == "shazam",
-                                onClick = { nav.selectTab("shazam", currentTab) },
-                                icon = { Icon(Icons.Default.GraphicEq, null) },
-                                label = { Text("Shazam") },
+                                onClick = {
+                                    // Double tap: recognize right away behind the fake loading screen.
+                                    val now = SystemClock.uptimeMillis()
+                                    if (now - lastShazamTap < DOUBLE_TAP_MS) {
+                                        lastShazamTap = 0L
+                                        if (hasMic(ctx)) shazam.start(stealth = true) else askMic.launch(Manifest.permission.RECORD_AUDIO)
+                                    } else {
+                                        lastShazamTap = now
+                                        nav.selectTab("shazam", currentTab)
+                                    }
+                                },
+                                icon = { BadgedBox(badge = { if (unseen) Badge() }) { Icon(Icons.Default.GraphicEq, null) } },
+                                label = { Text("Herkennen") },
                             )
                         }
                     }
@@ -176,7 +216,7 @@ fun FastifyNavHost() {
                 composable("home") { HomeScreen() }
                 composable("diagnostics") { DiagnosticsScreen(onBack = { nav.popBackStack() }) }
                 composable("search") { SearchScreen() }
-                composable("shazam") { ShazamScreen() }
+                composable("shazam") { ShazamScreen(shazam) }
                 composable("new") { NewReleasesScreen() }
                 composable(
                     "collection?c={c}",
@@ -197,8 +237,12 @@ fun FastifyNavHost() {
                 composable("lyrics") { LyricsScreen(onClose = { nav.popBackStack() }) }
             }
         }
+        if (stealth) StealthLoader(onCancel = shazam::stop)
+      }
     }
 }
+
+private const val DOUBLE_TAP_MS = 400L
 
 /**
  * Bottom bar tap. On another tab: switch to it, restoring where that tab was. On the current
