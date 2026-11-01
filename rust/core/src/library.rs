@@ -15,13 +15,13 @@ use protobuf::{EnumOrUnknown, Message};
 
 use crate::CoreError;
 
-#[derive(uniffi::Record, Clone)]
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct ArtistRef {
     pub id: String,
     pub name: String,
 }
 
-#[derive(uniffi::Record, Clone)]
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct TrackInfo {
     pub id: String,
     pub title: String,
@@ -292,18 +292,27 @@ pub async fn rootlist(session: &Session) -> Result<Vec<PlaylistInfo>, CoreError>
 }
 
 pub async fn playlist_tracks(session: &Session, id: &str) -> Result<Vec<TrackInfo>, CoreError> {
+    let ids = playlist_ids(session, id).await?;
+    hydrate_tracks(session, &ids).await
+}
+
+async fn playlist_ids(session: &Session, id: &str) -> Result<Vec<String>, CoreError> {
     let bytes = session.spclient().get_playlist(&parse_id(id)?).await?;
     let list = SelectedListContent::parse_from_bytes(&bytes).map_err(CoreError::other)?;
-    let ids: Vec<String> = list
+    Ok(list
         .contents
         .items
         .iter()
         .filter_map(|i| id_from_uri(i.uri(), "track").map(str::to_owned))
-        .collect();
-    hydrate_tracks(session, &ids).await
+        .collect())
 }
 
 pub async fn album_tracks(session: &Session, id: &str) -> Result<Vec<TrackInfo>, CoreError> {
+    let ids = album_ids(session, id).await?;
+    hydrate_tracks(session, &ids).await
+}
+
+async fn album_ids(session: &Session, id: &str) -> Result<Vec<String>, CoreError> {
     let uri = format!(
         "spotify:album:{}",
         parse_id(id)?.to_base62().map_err(CoreError::from)?
@@ -313,13 +322,61 @@ pub async fn album_tracks(session: &Session, id: &str) -> Result<Vec<TrackInfo>,
         msg: format!("album {id}"),
     })?;
     let album = metadata::Album::parse_from_bytes(bytes).map_err(CoreError::other)?;
-    let ids: Vec<String> = album
+    Ok(album
         .disc
         .iter()
         .flat_map(|d| d.track.iter())
         .filter_map(|t| base62(t.gid()))
-        .collect();
-    hydrate_tracks(session, &ids).await
+        .collect())
+}
+
+/// Track ids of a Connect context (spotify:playlist:..., album, collection, artist, ...), in
+/// context order. Playlists, albums and liked songs use the same calls as the library screens;
+/// anything else goes through context-resolve, following next pages.
+pub(crate) async fn context_track_ids(session: &Session, uri: &str) -> Result<Vec<String>, CoreError> {
+    if let Some(id) = id_from_uri(uri, "playlist") {
+        return playlist_ids(session, id).await;
+    }
+    if let Some(id) = id_from_uri(uri, "album") {
+        return album_ids(session, id).await;
+    }
+    if uri.ends_with(":collection") || uri == "spotify:collection:tracks" {
+        return Ok(collection(session)
+            .await?
+            .iter()
+            .filter_map(|u| id_from_uri(u, "track").map(str::to_owned))
+            .collect());
+    }
+    if let Some(id) = id_from_uri(uri, "track") {
+        return Ok(vec![id.to_owned()]);
+    }
+    let ctx = session.spclient().get_context(uri).await?;
+    let mut ids = Vec::new();
+    // Pages come inline, as a page_url (lazy) or chained by next_page_url. Cap the fetches: the
+    // queue doesn't need thousands of tracks from an artist radio.
+    let mut fetches = 0;
+    for page in &ctx.pages {
+        let mut url = if page.tracks.is_empty() { page.page_url() } else { page.next_page_url() }.to_owned();
+        page_track_ids(&page.tracks, &mut ids);
+        while !url.is_empty() && fetches < 20 {
+            fetches += 1;
+            let bytes = session.spclient().get_next_page(&url).await?;
+            let next: librespot_protocol::context_page::ContextPage =
+                protobuf_json_mapping::parse_from_str(&String::from_utf8_lossy(&bytes))
+                    .map_err(CoreError::other)?;
+            page_track_ids(&next.tracks, &mut ids);
+            url = next.next_page_url().to_owned();
+        }
+    }
+    Ok(ids)
+}
+
+pub(crate) fn page_track_ids(tracks: &[librespot_protocol::context_track::ContextTrack], out: &mut Vec<String>) {
+    out.extend(
+        tracks
+            .iter()
+            .filter_map(|t| id_from_uri(t.uri().split('?').next().unwrap_or(""), "track").map(str::to_owned)),
+    );
 }
 
 /// Liked songs and saved albums share the "collection" set. The server's page order is not

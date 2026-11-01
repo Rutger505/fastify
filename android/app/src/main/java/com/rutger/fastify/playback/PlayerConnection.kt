@@ -112,13 +112,13 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
         playLocal(tracks, startIndex, shuffle, contextUri)
     }
 
-    private fun playLocal(tracks: List<Track>, startIndex: Int, shuffle: Boolean?, contextUri: String?, positionMs: Long = 0) = withController {
+    private fun playLocal(tracks: List<Track>, startIndex: Int, shuffle: Boolean?, contextUri: String?) = withController {
         if (tracks.isEmpty()) return@withController
         val sh = shuffle ?: shuffleModeEnabled
         val start = if (startIndex >= 0) startIndex.coerceAtMost(tracks.lastIndex) else if (sh) tracks.indices.random() else 0
         setContext(contextUri)
         shuffleModeEnabled = false
-        setMediaItems(tracks.map { it.toMediaItem() }, start, positionMs)
+        setMediaItems(tracks.map { it.toMediaItem() }, start, 0)
         shuffleModeEnabled = sh
         prepare()
         play()
@@ -150,38 +150,23 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
         withController { setContext(null); stop(); clearMediaItems() }
     }
 
-    /**
-     * Play on this phone. From a remote device: pause it and continue its track (same position)
-     * and upcoming queue here. Otherwise just stop controlling it.
-     */
-    fun playHere() {
-        if (!remoteOn) return
-        scope.launch {
-            val h = remote.handoff()
-            remote.pause()
-            remote.detach()
-            if (h == null || h.tracks.isEmpty()) return@launch
-            playLocal(h.tracks, 0, shuffle = false, contextUri = h.contextUri, positionMs = h.positionMs)
-        }
+    /** Device picker "This phone": transfer playback from the active device here. */
+    fun transferHere() {
+        val active = remote.state.value?.activeDeviceId
+        if (active == null) remote.detach() else remote.transfer(from = active, to = null)
     }
 
-    /** Hand local playback to Connect device [deviceId]: same queue and position, phone pauses. */
-    fun playOn(deviceId: String) {
-        val s = _state.value
+    /**
+     * Device picker: move playback to [deviceId], from whichever device plays now (this phone
+     * included). Nothing loaded anywhere: just control that device.
+     */
+    fun transferTo(deviceId: String) {
         val active = remote.state.value?.activeDeviceId
         when {
-            // Already controlling something: move it between remote devices.
-            remoteOn && active != null && active != deviceId -> remote.transfer(deviceId)
-            remoteOn || s.current == null -> remote.attach(deviceId)
-            else -> {
-                val order = s.order.takeIf { it.size == s.queue.size } ?: s.queue.indices.toList()
-                val from = order.indexOf(s.index).coerceAtLeast(0)
-                val upcoming = order.drop(from).take(HANDOFF_TRACKS).map { s.queue[it] }
-                val position = position()
-                withController { pause() }
-                remote.attach(deviceId)
-                remote.play(upcoming, 0, shuffle = false, contextUri = null, positionMs = position, to = deviceId)
-            }
+            active == deviceId -> remote.attach(deviceId)
+            active != null -> remote.transfer(from = active, to = deviceId)
+            _state.value.current != null -> remote.transfer(from = null, to = deviceId)
+            else -> remote.attach(deviceId)
         }
     }
 
@@ -222,7 +207,7 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
 
     private fun refresh(full: Boolean) {
         val c = controller ?: return
-        // Playing on the phone (notification, Bluetooth, playHere) ends remote control.
+        // Playing on the phone (notification, Bluetooth, a transfer here) ends remote control.
         if (c.isPlaying && !_state.value.isPlaying) remote.detach()
         val queue = if (full) (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toTrack() } else _state.value.queue
         val autoplayFrom = if (full) (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).isAutoplay } ?: -1
@@ -263,11 +248,6 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
             i = t.getNextWindowIndex(i, Player.REPEAT_MODE_OFF, c.shuffleModeEnabled)
         }
         return out
-    }
-
-    private companion object {
-        /** Upcoming tracks sent along when handing playback to another device. */
-        const val HANDOFF_TRACKS = 100
     }
 
     private fun describe(e: PlaybackException): String =

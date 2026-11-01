@@ -247,40 +247,35 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         send(RemoteCommand.SetQueue(s.nextTracks.filterIndexed { j, _ -> j != i }, s.prevTracks, s.queueRevision))
     }
 
-    fun play(tracks: List<Track>, start: Int, shuffle: Boolean?, contextUri: String?, positionMs: Long = 0, to: String? = _target.value) =
-        send(RemoteCommand.Play(contextUri, tracks.map { it.id }, start.coerceAtLeast(0).toUInt(), positionMs.coerceAtLeast(0).toULong(), shuffle), to)
+    fun play(tracks: List<Track>, start: Int, shuffle: Boolean?, contextUri: String?) =
+        send(RemoteCommand.Play(contextUri, tracks.map { it.id }, start.coerceAtLeast(0).toUInt(), 0UL, shuffle))
 
     fun pause() = send(RemoteCommand.Pause)
 
     fun setVolume(deviceId: String, volume: Int) = send(RemoteCommand.Volume(volume.coerceIn(0, 65535).toUInt()), deviceId)
 
-    /** Move playback from the active remote device to another remote device. */
-    fun transfer(to: String) {
-        val from = _state.value?.activeDeviceId ?: return
+    /**
+     * Spotify Connect transfer: playback (queue, position, play/pause) moves from device [from] to
+     * [to]; null = this phone. The server builds it from the source's state, so from this phone the
+     * core PUTs the current state first. The receiving phone loads it in [ConnectTarget].
+     */
+    fun transfer(from: String?, to: String?) {
         scope.launch {
-            runCatching { core().connectTransfer(from, to) }
-                .onSuccess { attach(to) }
+            runCatching {
+                val me = core().connectDeviceId()
+                core().connectTransfer(from ?: me, to ?: me)
+            }
+                .onSuccess {
+                    error = null
+                    if (to != null) attach(to) else detach()
+                }
                 .onFailure { e ->
-                    AppLog.w(TAG, "transfer failed", e)
+                    AppLog.w(TAG, "transfer ${from ?: "phone"} -> ${to ?: "phone"} failed", e)
                     error = "Connect transfer: ${e.message}"
                     render()
                 }
         }
     }
-
-    /** The remote queue from the current track on (with titles), to take playback over locally. */
-    suspend fun handoff(): Handoff? {
-        val s = _state.value ?: return null
-        val cur = s.track ?: return null
-        val remote = listOf(cur) + s.nextTracks.filter { it.provider != "autoplay" }
-        val missing = remote.map { it.uri.removePrefix("spotify:track:") }.filter { !meta.containsKey(it) }
-        if (missing.isNotEmpty()) {
-            runCatching { core().tracks(missing) }.onSuccess { l -> l.forEach { meta[it.id] = it.toTrack() } }
-        }
-        return Handoff(remote.map(::trackOf).filter { it.title.isNotEmpty() }, position(), s.shuffle, s.contextUri)
-    }
-
-    data class Handoff(val tracks: List<Track>, val positionMs: Long, val shuffle: Boolean, val contextUri: String?)
 
     companion object {
         private const val TAG = "Connect"

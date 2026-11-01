@@ -33,32 +33,36 @@ desktop client id, the same way librespot does.
 
 ## Spotify Connect
 
-- Remote control only, so far: `rust/core/src/connect.rs` registers a hidden, observe-only Connect
-  device over the dealer websocket, follows the account's device cluster and sends player commands
-  (`/connect-state/v1/player/command`) to the active device.
-- `ConnectRemote` attaches when another device plays and the phone doesn't; `PlayerConnection` then
-  routes the whole player UI (mini player, player, queue) there.
-- Devices button in the player: pick a device (hands the local queue + position over) or "This
-  phone" (takes the remote queue + position over).
-- Probe: `fastify-probe <dir> connect` prints the cluster, `cmd <device> pause|next|...` sends one.
+Fastify is a real Connect device ("Fastify (<model>)") while the playback service runs (app open
+or playing): the desktop app lists it, can transfer playback to it and control it, and the phone
+can move playback anywhere, both ways.
 
-Next: Fastify as a real Connect target (PC sees the phone, can push playback to it and control it):
-- Extend the observer in `connect.rs`, don't add a second one: one dealer per session (`dealer().start()`
-  consumes the builder), and one connect-state device per device id. Flip the capabilities
-  (`can_be_player`, `is_controllable`, not `hidden`) and set a real name.
-- Don't use `librespot-connect`'s Spirc: it drives `librespot-playback`'s Player, but ExoPlayer plays
-  here. Use it as the reference for the protocol: crate source at
-  `static.crates.io/crates/librespot-connect/librespot-connect-0.8.0.crate`, mainly `spirc.rs`
-  (command handling, transfer) and `state.rs` (PutStateRequest fields).
-- Incoming: `dealer().handle_for("hm://connect-state/v1/player/command")`, reply to every request.
-  Command JSON shapes: `librespot-core/src/dealer/protocol/request.rs`. Transfer carries a
-  base64 `TransferState` (track, queue, position, context); map it to `PlayerConnection.play`.
-- Outgoing: PUT the local player state (track, position + timestamp, prev/next tracks, options,
-  is_active) on every local change, otherwise the PC shows stale state.
-- Then drop the handoff hacks (`playHere`/`playOn`) in favour of real transfers both ways.
-- Server returns 403 for commands the target rejects (e.g. pause while already paused).
-- Testing: the probe can register and print the cluster against the real account. PC playback is
-  Rutger's, so don't start/stop it without asking.
+- `rust/core/src/connect.rs`: one dealer connection per session (`dealer().start()` consumes the
+  builder: never add a second one). It follows the device cluster (remote control) and, once
+  `ConnectTarget` attaches the local player, registers as a player (`can_be_player`,
+  controllable, not hidden). Without a player it's a hidden observer.
+- Incoming: `hm://connect-state/v1/player/command` (+ volume pushes) -> `ConnectRequest` for Kotlin
+  (`connect_next_request` / `connect_reply`); every request gets a reply (10 s timeout = failure).
+  Play/transfer contexts are resolved in Rust (playlist/album/collection like the library
+  screens, else context-resolve with paging) and hydrated before Kotlin gets them.
+- Outgoing: `ConnectTarget` publishes the ExoPlayer state (track, position + timestamp, prev/next in
+  play order, options, volume) on every player event; the core PUTs it. Queue uids are
+  `fy<media item index>`.
+- Active device: playing locally (or a successful play/transfer) makes the phone active (the
+  other device stops). The server has to confirm it (cluster names us); after that another
+  active device in a cluster update means it took over -> `Deactivated` -> phone pauses.
+- Transfers: `connect_transfer(from, to)`; from this phone the core PUTs the state as active
+  first, the server builds the transfer from it.
+- `ConnectRemote` attaches the player UI to another device when it plays and the phone doesn't;
+  `PlayerConnection` then routes mini player, player and queue there. Device picker = transfers.
+- Pitfalls: server 403s commands the target rejects (pause while paused). Paused state must be
+  `is_playing + is_paused + is_buffering` (like spirc), else the desktop greys out play. Never
+  leave `context_uri` empty (falls back to the current track).
+- Probe: `fastify-probe <dir> connect` prints the cluster, `cmd <device> pause|next|transfer <to>|...`
+  sends one, `target <name> [secs] [track]` acts as a simulated player (with a track it becomes
+  active). Test with two probe dirs (copy `credentials/`, own `keys/device_id`), not the PC:
+  PC playback is Rutger's, don't start/stop it without asking.
+- Not reachable when the service is gone (app closed and not playing).
 
 ## UI rules
 

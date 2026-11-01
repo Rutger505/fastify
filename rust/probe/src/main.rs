@@ -6,6 +6,7 @@
 //!   fastify-probe <data-dir> artist|album|lyrics <id>
 //!   fastify-probe <data-dir> pladd <playlist> <track> | plrm <playlist> <track> <occurrence>
 //!   fastify-probe <data-dir> like|unlike <track> | download <track>
+//!   fastify-probe <data-dir> target <name> [secs] [track]  # act as a Connect player, print commands
 //!   fastify-probe <data-dir> shazam <file.s16>  # raw 16 kHz mono s16le, e.g. ffmpeg -i x.mp3 -ss 60 -t 12 -ac 1 -ar 16000 -f s16le x.s16
 //!
 //! The OAuth redirect goes to 127.0.0.1:8898 on this machine. When logging in from another
@@ -84,6 +85,11 @@ async fn main() {
                 core.clone().connect_command(dev, c).await
             };
             println!("{:?}", res.map_err(|e| e.to_string()));
+        }
+        "target" => {
+            let name = args.get(3).cloned().unwrap_or_else(|| "Fastify probe".into());
+            let secs: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(60);
+            target(core, name, secs, args.get(5).cloned()).await
         }
         "run" => run(core).await,
         "raw" => {
@@ -246,4 +252,119 @@ fn tracks(t: &Vec<fastify_core::TrackInfo>) -> String {
             ))
             .collect::<Vec<_>>()
     )
+}
+
+
+/// Simulated Connect player: registers as a device, applies commands to a fake queue, publishes
+/// the state back. With a track it loads it (paused) and becomes the active device right away.
+async fn target(core: Arc<FastifyCore>, name: String, secs: u64, track: Option<String>) {
+    use fastify_core::{ConnectRequest as R, LocalPlayer, RemoteTrack};
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let rt = |id: &str, i: usize, provider: &str| RemoteTrack { uri: format!("spotify:track:{id}"), uid: format!("fy{i}"), provider: provider.into() };
+    // queue (id, provider), index, playing, position at time
+    let mut queue: Vec<(String, String)> = Vec::new();
+    let mut index = 0usize;
+    let mut playing = false;
+    let (mut pos, mut at) = (0u64, now());
+    let mut shuffle = false;
+    let mut repeat = (false, false);
+    let mut ctx: Option<String> = None;
+    let mut volume = 40000u32;
+    let state = |queue: &Vec<(String, String)>, index: usize, playing: bool, pos: u64, at: u64, shuffle: bool, repeat: (bool, bool), ctx: &Option<String>, volume: u32| LocalPlayer {
+        name: name.clone(),
+        track: queue.get(index).map(|(id, p)| rt(id, index, p)),
+        is_playing: playing,
+        is_buffering: false,
+        position_ms: pos,
+        position_at_ms: at,
+        duration_ms: 200_000,
+        shuffle,
+        repeat_context: repeat.0,
+        repeat_track: repeat.1,
+        context_uri: ctx.clone(),
+        prev_tracks: queue.iter().enumerate().take(index).map(|(i, (id, p))| rt(id, i, p)).collect(),
+        next_tracks: queue.iter().enumerate().skip(index + 1).map(|(i, (id, p))| rt(id, i, p)).collect(),
+        volume,
+    };
+    if let Some(t) = &track {
+        queue.push((t.clone(), "context".into()));
+    }
+    core.connect_set_player(Some(state(&queue, index, playing, pos, at, shuffle, repeat, &ctx, volume)));
+    println!("device id {}", core.connect_device_id());
+    let watcher = {
+        let core = core.clone();
+        tokio::spawn(async move {
+            let mut v = 0;
+            loop {
+                let Ok(s) = core.clone().connect_watch(v).await else { break };
+                if s.version != v {
+                    v = s.version;
+                    println!("  cluster: active={:?} devices={:?}", s.active_device_id, s.devices.iter().map(|d| (&d.name, d.can_play)).collect::<Vec<_>>());
+                }
+            }
+        })
+    };
+    if track.is_some() {
+        // After registering: a paused player gives up activity when (re)registering.
+        let core = core.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            core.connect_activate();
+        });
+    }
+    let end = Instant::now() + std::time::Duration::from_secs(secs);
+    while Instant::now() < end {
+        let req = match core.clone().connect_next_request().await {
+            Ok(Some(r)) => r,
+            Ok(None) => continue,
+            Err(e) => { println!("ERR {e}"); break; }
+        };
+        let cur = |pos: u64, at: u64, playing: bool| if playing { pos + (now() - at) } else { pos };
+        match &req.command {
+            R::Load { tracks, start_index, position_ms, paused, context_uri, shuffle: sh, repeat_context, repeat_track, queued } => {
+                println!("LOAD {} tracks start={start_index} pos={position_ms} paused={paused} ctx={context_uri:?} shuffle={sh:?} repeat={repeat_context:?}/{repeat_track:?} queued={}", tracks.len(), queued.len());
+                for t in tracks.iter().skip((*start_index).max(0) as usize).take(3) { println!("    {} - {} ({})", t.title, t.artists, t.id) }
+                index = (*start_index).max(0) as usize;
+                queue = tracks.iter().map(|t| (t.id.clone(), "context".to_string())).collect();
+                for (i, q) in queued.iter().enumerate() { queue.insert(index + 1 + i, (q.id.clone(), "queue".into())) }
+                playing = !paused; pos = *position_ms; at = now();
+                shuffle = sh.unwrap_or(shuffle);
+                repeat = (repeat_context.unwrap_or(repeat.0), repeat_track.unwrap_or(repeat.1));
+                ctx = context_uri.clone();
+            }
+            R::Pause => { pos = cur(pos, at, playing); at = now(); playing = false; println!("PAUSE at {pos}") }
+            R::Resume => { at = now(); playing = true; println!("RESUME") }
+            R::SeekTo { position_ms } => { pos = *position_ms; at = now(); println!("SEEK {position_ms}") }
+            R::SkipNext { track } => {
+                let to = track.as_ref().and_then(|t| (index + 1..queue.len()).find(|&i| format!("fy{i}") == t.uid || queue[i].0 == t.uri.trim_start_matches("spotify:track:")));
+                index = to.unwrap_or(index + 1).min(queue.len().saturating_sub(1)); pos = 0; at = now();
+                println!("NEXT -> {index} {:?}", queue.get(index));
+            }
+            R::SkipPrev => { index = index.saturating_sub(1); pos = 0; at = now(); println!("PREV -> {index}") }
+            R::SetOptions { shuffle: s, repeat_context, repeat_track } => {
+                shuffle = s.unwrap_or(shuffle);
+                repeat = (repeat_context.unwrap_or(repeat.0), repeat_track.unwrap_or(repeat.1));
+                println!("OPTIONS shuffle={shuffle} repeat={repeat:?}");
+            }
+            R::AddToQueue { track } => {
+                let mut at_i = index + 1;
+                while at_i < queue.len() && queue[at_i].1 == "queue" { at_i += 1 }
+                queue.insert(at_i, (track.id.clone(), "queue".into()));
+                println!("QUEUE {} - {}", track.title, track.artists);
+            }
+            R::SetQueue { next } => {
+                let keep: Vec<&str> = next.iter().map(|t| t.uid.as_str()).collect();
+                let before = queue.len();
+                queue = queue.iter().enumerate().filter(|(i, _)| *i <= index || keep.contains(&format!("fy{i}").as_str())).map(|(_, q)| q.clone()).collect();
+                println!("SET_QUEUE {} -> {} items", before, queue.len());
+            }
+            R::Volume { volume: v } => { volume = *v; println!("VOLUME {v}") }
+            R::Deactivated => { pos = cur(pos, at, playing); at = now(); playing = false; println!("DEACTIVATED by {}", req.from_device_id) }
+        }
+        core.connect_reply(req.id, true);
+        core.connect_set_player(Some(state(&queue, index, playing, pos, at, shuffle, repeat, &ctx, volume)));
+    }
+    watcher.abort();
+    core.connect_set_player(None);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 }

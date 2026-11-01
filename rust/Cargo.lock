@@ -680,6 +680,7 @@ dependencies = [
  "librespot-protocol",
  "log",
  "protobuf",
+ "protobuf-json-mapping",
  "realfft",
  "rustfft",
  "serde",

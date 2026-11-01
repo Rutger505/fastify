@@ -45,7 +45,7 @@ fun DevicesSheet(onDismiss: () -> Unit) {
     FastifySheet(onDismiss = onDismiss) {
         SheetTitle("Connect to a device")
         DeviceRow(Icons.Default.Smartphone, "This phone", null, selected = target == null) {
-            c.player.playHere()
+            c.player.transferHere()
             onDismiss()
         }
         val s = remote
@@ -62,7 +62,7 @@ fun DevicesSheet(onDismiss: () -> Unit) {
                 else -> null
             }
             DeviceRow(kindIcon(d.kind), d.name, status, selected = target == d.id) {
-                c.player.playOn(d.id)
+                c.player.transferTo(d.id)
                 onDismiss()
             }
             if (target == d.id) VolumeRow(d.volume.toInt()) { c.remote.setVolume(d.id, it) }

@@ -43,6 +43,7 @@ class PlaybackService : MediaSessionService() {
     private var autoplayJob: Job? = null
     /** Seed + queue size of the last autoplay request that returned nothing: don't repeat it. */
     private var autoplayExhausted: String? = null
+    private var connect: ConnectTarget? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -79,6 +80,8 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         restoreQueue()
+        connect = ConnectTarget(this, player, { c.core }, ::playOrder, { contextUri }, ::setContext)
+            .also { it.start() }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -91,6 +94,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        connect?.stop()
+        connect = null
         autoplayJob?.cancel()
         saveQueue()
         session?.release()

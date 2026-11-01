@@ -28,7 +28,10 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 pub use catalog::{AlbumPage, ArtistPage, LyricLine, Lyrics};
-pub use connect::{RemoteCommand, RemoteDevice, RemoteState, RemoteTrack};
+pub use connect::{
+    ConnectRequest, IncomingRequest, LocalPlayer, RemoteCommand, RemoteDevice, RemoteState,
+    RemoteTrack,
+};
 pub use error::CoreError;
 use keystore::{KeyEntry, KeyStore};
 pub use library::{AlbumInfo, ArtistRef, PlaylistInfo, TrackInfo};
@@ -232,16 +235,65 @@ impl FastifyCore {
             .await
     }
 
-    /// Move playback between Connect devices.
+    /// Move playback between Connect devices (connect_device_id() = this phone). From this
+    /// phone, its current state is made active and PUT first: the transfer is built from it.
     pub async fn connect_transfer(
         self: Arc<Self>,
         from_device_id: String,
         to_device_id: String,
     ) -> Result<(), CoreError> {
-        self.with_session(move |s| async move {
-            connect::transfer(&s, &from_device_id, &to_device_id).await
-        })
-        .await
+        let this = self.clone();
+        self.rt
+            .spawn(async move {
+                let s = this.session().await?;
+                this.connect.ensure(&s);
+                if from_device_id == s.device_id() {
+                    this.connect.activate_now(&s).await?;
+                }
+                connect::transfer(&s, &from_device_id, &to_device_id).await
+            })
+            .await
+            .map_err(CoreError::other)?
+    }
+
+    /// This phone's Connect device id.
+    pub fn connect_device_id(&self) -> String {
+        self.device_id.clone()
+    }
+
+    /// Register the local player as a Connect device (Some, call on every change) or go back
+    /// to a hidden observer (None).
+    pub fn connect_set_player(&self, player: Option<LocalPlayer>) {
+        self.connect.set_player(player);
+    }
+
+    /// Local playback started here: take over as the account's active device.
+    pub fn connect_activate(&self) {
+        self.connect.activate();
+    }
+
+    /// Nothing loaded any more: stop being the active device.
+    pub fn connect_deactivate(&self) {
+        self.connect.deactivate();
+    }
+
+    /// Next command from another device for the local player; None after ~25 s. Keeps the
+    /// Connect registration alive (reconnects the session when needed): call in a loop.
+    pub async fn connect_next_request(self: Arc<Self>) -> Result<Option<IncomingRequest>, CoreError> {
+        let this = self.clone();
+        self.rt
+            .spawn(async move {
+                let session = this.session().await?;
+                this.connect.ensure(&session);
+                Ok(this.connect.next_request(Duration::from_secs(25)).await)
+            })
+            .await
+            .map_err(CoreError::other)?
+    }
+
+    /// Answer a request from connect_next_request (ok = handled).
+    pub fn connect_reply(&self, request_id: u64, ok: bool) {
+        self.connect.reply(request_id, ok);
     }
 
     /// The user's playlists (rootlist, folders flattened).
