@@ -59,12 +59,16 @@ See the header of the script.
 
 ## Updates
 
-The app updates itself from the CDN (`update/Updater.kt`). It checks `version.json` at launch, when it
-comes to the foreground (at most every 30 min) and every 6 h. It then downloads the APK, checks the
-sha256 and installs it with `PackageInstaller`. Once Fastify is the installer of record (after the
-first update, which Android asks you to confirm), updates install silently. Silent installs wait until
-the app has been in the background and not playing for 2 min, because an install kills the process.
-Home shows a card while an update is ready or failed. Diagnostics shows the full updater state.
+The app updates itself from the CDN (`update/Updater.kt`), the way app stores do it:
+
+- **Check** `version.json`: at launch, on foreground (at most every 30 min) and every 6 h from a
+  WorkManager job (unmetered network, battery not low), also while the app is closed.
+- **Download** the APK and verify its sha256.
+- **Install** with `PackageInstaller.commitSessionAfterInstallConstraintsAreMet`: Android installs it
+  without UI once Fastify is not in the foreground (not visible, not playing) and not in a call. No
+  `setAppNotInteractingRequired`: it counts network traffic, and the librespot keep-alive never stops.
+- Silent only when Fastify is the installer of record. The first update after a manual install needs
+  a tap (Home card + notification), and so does every update Play Protect wants to check.
 
 - `versionCode` is the commit count (`git rev-list --count HEAD`), so every commit is newer.
 - Publish: `scripts/publish` uploads `fastify-<versionCode>.apk`, `fastify.apk` and then `version.json`,
