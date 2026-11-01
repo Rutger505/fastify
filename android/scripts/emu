@@ -184,11 +184,12 @@ start() {
     fi
     rm -f "$CLEAN"
     # Never -wipe-data: the AVD holds the logged-in app data. RuntimeMaxSec is a safety net
-    # so a forgotten emulator doesn't keep 2-3 GB forever.
+    # so a forgotten emulator doesn't keep 2-3 GB forever. MemoryHigh 3G: the emulator raises
+    # guest RAM to 2560 MB itself; at 2G the unit kept ~1.5 GB of it in swap (slow boot/UI).
     systemd-run --user --unit="$UNIT" --collect --quiet \
       -E ANDROID_HOME -E ANDROID_SDK_ROOT -E ANDROID_AVD_HOME \
       -p StandardOutput="truncate:$LOG" -p StandardError="truncate:$LOG" \
-      -p MemoryHigh=2G -p OOMScoreAdjust=500 -p RuntimeMaxSec="${EMU_MAX_RUNTIME:-3h}" \
+      -p MemoryHigh="${EMU_MEMORY_HIGH:-3G}" -p OOMScoreAdjust=500 -p RuntimeMaxSec="${EMU_MAX_RUNTIME:-3h}" \
       "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -port "$PORT" -no-window -no-audio \
       -no-boot-anim "${snap[@]}" -memory 1280 -cores 2 -gpu "${EMU_GPU:-guest}"
     echo "emulator starting (unit $UNIT, $ANDROID_SERIAL)"
