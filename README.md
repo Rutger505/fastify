@@ -40,8 +40,25 @@ desktop client id, the same way librespot does.
   routes the whole player UI (mini player, player, queue) there.
 - Devices button in the player: pick a device (hands the local queue + position over) or "This
   phone" (takes the remote queue + position over).
-- Not yet: Fastify as a real Connect target, so other clients can't push playback to the phone.
 - Probe: `fastify-probe <dir> connect` prints the cluster, `cmd <device> pause|next|...` sends one.
+
+Next: Fastify as a real Connect target (PC sees the phone, can push playback to it and control it):
+- Extend the observer in `connect.rs`, don't add a second one: one dealer per session (`dealer().start()`
+  consumes the builder), and one connect-state device per device id. Flip the capabilities
+  (`can_be_player`, `is_controllable`, not `hidden`) and set a real name.
+- Don't use `librespot-connect`'s Spirc: it drives `librespot-playback`'s Player, but ExoPlayer plays
+  here. Use it as the reference for the protocol: crate source at
+  `static.crates.io/crates/librespot-connect/librespot-connect-0.8.0.crate`, mainly `spirc.rs`
+  (command handling, transfer) and `state.rs` (PutStateRequest fields).
+- Incoming: `dealer().handle_for("hm://connect-state/v1/player/command")`, reply to every request.
+  Command JSON shapes: `librespot-core/src/dealer/protocol/request.rs`. Transfer carries a
+  base64 `TransferState` (track, queue, position, context); map it to `PlayerConnection.play`.
+- Outgoing: PUT the local player state (track, position + timestamp, prev/next tracks, options,
+  is_active) on every local change, otherwise the PC shows stale state.
+- Then drop the handoff hacks (`playHere`/`playOn`) in favour of real transfers both ways.
+- Server returns 403 for commands the target rejects (e.g. pause while already paused).
+- Testing: the probe can register and print the cluster against the real account. PC playback is
+  Rutger's, so don't start/stop it without asking.
 
 ## UI rules
 
