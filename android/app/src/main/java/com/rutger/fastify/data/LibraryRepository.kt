@@ -94,15 +94,18 @@ class LibraryRepository(
         SearchResults(tracks = timed("search '$query'") { core().searchTracks(query) }.map { it.toTrack() })
 
     /**
-     * Shazam [pcm] (16 kHz mono) and map the hit to Spotify: Shazam's own Spotify link when it has
-     * one, else a search for "title artist". Null = Shazam didn't recognize it.
+     * Shazam [pcm] (16 kHz mono) and map the hit to Spotify. tracks[0] is the best match: Shazam's own
+     * Spotify link, else the first search hit whose title equals Shazam's, else the first hit. The rest
+     * are other versions, with re-releases of the same title + artists dropped. Null = no match.
      */
     suspend fun shazam(pcm: ShortArray): ShazamResult? = withContext(Dispatchers.IO) {
         val m = timed("shazam ${pcm.size / 16000}s") { core().shazam(pcm.toList()) } ?: return@withContext null
         val linked = m.spotifyTrackId?.let { id -> runCatching { core().tracks(listOf(id)) }.getOrNull()?.map { it.toTrack() } }.orEmpty()
         val searched = runCatching { search("${m.title} ${m.artist.substringBefore(" & ").substringBefore(" feat")}").tracks }
             .getOrElse { if (linked.isEmpty()) throw it else emptyList() }
-        ShazamResult(m.title, m.artist, m.coverUrl, (linked + searched).distinctBy { it.id }.take(5))
+        val title = normalized(m.title)
+        val ranked = linked + searched.filter { normalized(it.title) == title } + searched
+        ShazamResult(m.title, m.artist, m.coverUrl, ranked.distinctBy { normalized(it.title) to normalized(it.artists) }.take(5))
     }
 
     /** Playlists the user can add to: their own (owner unknown = assume editable). */
@@ -226,3 +229,6 @@ fun AlbumInfo.toCollection(showArtists: Boolean = false) = Collection(
     ).joinToString(" • "),
     imageUrl,
 )
+
+/** Lowercase letters/digits only, so "Open Your Eyes - Live" and "Open Your Eyes (Live)" compare equal. */
+private fun normalized(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()

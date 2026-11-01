@@ -191,6 +191,7 @@ fun ShazamScreen(vm: ShazamViewModel) {
     val downloaded by c.downloads.trackIds.collectAsStateWithLifecycle()
     val playerState by c.player.state.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf<TrackMenu?>(null) }
+    var showVersions by remember(state) { mutableStateOf(false) }
     var denied by remember { mutableStateOf(false) }
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         denied = !ok
@@ -242,9 +243,19 @@ fun ShazamScreen(vm: ShazamViewModel) {
                     if (r.tracks.isEmpty()) Text("Not found on Spotify", color = MaterialTheme.colorScheme.error)
                 }
             }
-            itemsIndexed(r.tracks, key = { _, t -> "now" + t.id }) { i, t ->
-                TrackRow(t, playing = playerState.current?.id == t.id, onClick = { c.player.play(r.tracks, i) },
+            // Best match only; other versions (live, remasters, ...) behind a toggle.
+            val shown = if (showVersions) r.tracks else r.tracks.take(1)
+            itemsIndexed(shown, key = { _, t -> "now" + t.id }) { i, t ->
+                TrackRow(t, playing = playerState.current?.id == t.id, onClick = { c.player.play(listOf(t), 0) },
                     downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, onSwipeQueue = { c.player.addToQueue(t) })
+                if (i == 0 && r.tracks.size > 1) {
+                    Text(
+                        (if (showVersions) "Hide other versions" else "Other versions (${r.tracks.size - 1})"),
+                        Modifier.fillMaxWidth().clickable { showVersions = !showVersions }.padding(horizontal = 16.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
         val past = found.filterNot { (state as? ShazamState.Found)?.result == it }
