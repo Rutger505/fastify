@@ -356,12 +356,15 @@ fun PlayerScreen(onClose: () -> Unit) {
         FastifySheet(onDismiss = { showQueue = false }) {
             val listState = rememberLazyListState()
             // Show the queue in play order (shuffled when shuffle is on), like Spotify.
-            val order = state.order.takeIf { it.size == state.queue.size } ?: state.queue.indices.toList()
+            // One snapshot: the item lambdas run later, when `state` may already be a shorter queue
+            // (swipe-remove crashed with IndexOutOfBounds when they read `state` directly).
+            val queue = state.queue
+            val order = state.order.takeIf { it.size == queue.size } ?: queue.indices.toList()
             LaunchedEffect(Unit) { listState.scrollToItem(order.indexOf(state.index).coerceAtLeast(0)) }
             SheetTitle("Queue")
             LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
-                items(order, key = { i -> "$i-${state.queue[i].id}" }) { i ->
-                    val t = state.queue[i]
+                items(order, key = { i -> "$i-${queue[i].id}" }) { i ->
+                    val t = queue[i]
                     // Sections after the current track: hand-queued, then the playlist, then recommendations.
                     val pos = order.indexOf(i)
                     val cur = order.indexOf(state.index)
@@ -379,6 +382,8 @@ fun PlayerScreen(onClose: () -> Unit) {
                     }
                     TrackRow(t, playing = i == state.index, onClick = { player.playQueueIndex(i) },
                         onMore = { menu = TrackMenu(t, queueIndex = i.takeIf { it != state.index }) }, queued = i in state.queued,
+                        onSwipeQueue = { player.addToQueue(t) },
+                        onSwipeRemove = if (i != state.index) { { player.removeFromQueue(i) } } else null,
                         openPlayerIfPlaying = false)
                 }
             }

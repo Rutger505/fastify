@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.ArrowCircleDown
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -106,6 +107,8 @@ fun TrackRow(
     trailing: String? = null,
     /** Swipe left-to-right adds the track to the queue. */
     onSwipeQueue: (() -> Unit)? = null,
+    /** Swipe right-to-left removes the row (play queue); the row slides out instead of back. */
+    onSwipeRemove: (() -> Unit)? = null,
     /** Hand-queued (shown in the queue sheet). */
     queued: Boolean = false,
     /** Tapping the playing track opens the full-screen player instead of restarting it. */
@@ -113,7 +116,7 @@ fun TrackRow(
 ) {
     val nav = com.rutger.fastify.ui.LocalNavigator.current
     val onClick: () -> Unit = if (playing && openPlayerIfPlaying) { { nav.openPlayer() } } else onClick
-    if (onSwipeQueue == null) {
+    if (onSwipeQueue == null && onSwipeRemove == null) {
         TrackRowContent(track, playing, onClick, modifier, downloaded, onMore, number, subtitle, trailing, queued)
         return
     }
@@ -122,15 +125,24 @@ fun TrackRow(
     val offset = remember { Animatable(0f) }
     var width by remember { mutableIntStateOf(1) }
     val threshold = width * 0.3f
+    val min = if (onSwipeRemove != null) -width * 0.6f else 0f
+    val max = if (onSwipeQueue != null) width * 0.6f else 0f
     Box(modifier.fillMaxWidth().onSizeChanged { width = it.width.coerceAtLeast(1) }) {
-        val armed = offset.value >= threshold
-        val iconSize by androidx.compose.animation.core.animateDpAsState(if (armed) 36.dp else 24.dp, fast(), label = "queueIcon")
+        val armed = kotlin.math.abs(offset.value) >= threshold
+        val iconSize by androidx.compose.animation.core.animateDpAsState(if (armed) 36.dp else 24.dp, fast(), label = "swipeIcon")
         if (offset.value > 0f) {
             Box(
                 Modifier.matchParentSize().background(Green)
                     .padding(start = 24.dp),
                 contentAlignment = Alignment.CenterStart,
             ) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue", tint = Color.Black,
+                modifier = Modifier.size(iconSize)) }
+        } else if (offset.value < 0f) {
+            Box(
+                Modifier.matchParentSize().background(MaterialTheme.colorScheme.error)
+                    .padding(end = 24.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) { Icon(Icons.Default.RemoveCircleOutline, "Remove from queue", tint = MaterialTheme.colorScheme.onError,
                 modifier = Modifier.size(iconSize)) }
         }
         TrackRowContent(
@@ -139,13 +151,29 @@ fun TrackRow(
                 .background(MaterialTheme.colorScheme.background)
                 .draggable(
                     orientation = Orientation.Horizontal,
-                    state = rememberDraggableState { d -> scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, width * 0.6f)) } },
+                    state = rememberDraggableState { d -> scope.launch { offset.snapTo((offset.value + d).coerceIn(min, max)) } },
+                    // Release runs in our own scope, queued after the drag's pending snapTo calls: in
+                    // draggable's scope a late snapTo could cancel the spring-back and leave the row stuck.
                     onDragStopped = {
-                        if (offset.value >= threshold) {
-                            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-                            onSwipeQueue()
+                        scope.launch {
+                            val x = offset.value
+                            when {
+                                x >= threshold && onSwipeQueue != null -> {
+                                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                    onSwipeQueue()
+                                    offset.animateTo(0f, fast())
+                                }
+                                x <= -threshold && onSwipeRemove != null -> {
+                                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                    offset.animateTo(-width.toFloat(), fast())
+                                    onSwipeRemove()
+                                    // Normally the row leaves the list now; if it didn't, bring it back.
+                                    kotlinx.coroutines.delay(1000)
+                                    offset.animateTo(0f, fast())
+                                }
+                                else -> offset.animateTo(0f, fast())
+                            }
                         }
-                        offset.animateTo(0f, fast())
                     },
                 ),
             downloaded, onMore, number, subtitle, trailing, queued,
