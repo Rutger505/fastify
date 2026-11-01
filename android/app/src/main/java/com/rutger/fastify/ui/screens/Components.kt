@@ -108,7 +108,11 @@ fun TrackRow(
     onSwipeQueue: (() -> Unit)? = null,
     /** Hand-queued (shown in the queue sheet). */
     queued: Boolean = false,
+    /** Tapping the playing track opens the full-screen player instead of restarting it. */
+    openPlayerIfPlaying: Boolean = true,
 ) {
+    val nav = com.rutger.fastify.ui.LocalNavigator.current
+    val onClick: () -> Unit = if (playing && openPlayerIfPlaying) { { nav.openPlayer() } } else onClick
     if (onSwipeQueue == null) {
         TrackRowContent(track, playing, onClick, modifier, downloaded, onMore, number, subtitle, trailing, queued)
         return

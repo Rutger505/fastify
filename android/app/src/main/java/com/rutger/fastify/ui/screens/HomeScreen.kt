@@ -95,7 +95,10 @@ fun HomeScreen() {
                     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
                         items(home.recent, key = { it.id }) { t ->
                             AlbumCard(t.title, t.artists, t.imageUrl,
-                                onClick = { c.player.play(home.recent, home.recent.indexOf(t)) },
+                                onClick = {
+                                    if (playerState.current?.id == t.id) nav.openPlayer()
+                                    else c.player.play(home.recent, home.recent.indexOf(t))
+                                },
                                 highlighted = playerState.current?.id == t.id)
                         }
                     }

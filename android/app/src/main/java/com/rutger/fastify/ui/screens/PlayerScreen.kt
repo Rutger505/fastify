@@ -378,7 +378,8 @@ fun PlayerScreen(onClose: () -> Unit) {
                         )
                     }
                     TrackRow(t, playing = i == state.index, onClick = { player.playQueueIndex(i) },
-                        onMore = { menu = TrackMenu(t, queueIndex = i.takeIf { it != state.index }) }, queued = i in state.queued)
+                        onMore = { menu = TrackMenu(t, queueIndex = i.takeIf { it != state.index }) }, queued = i in state.queued,
+                        openPlayerIfPlaying = false)
                 }
             }
         }
