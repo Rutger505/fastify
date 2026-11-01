@@ -244,7 +244,7 @@ fun ShazamScreen(vm: ShazamViewModel) {
             }
             itemsIndexed(r.tracks, key = { _, t -> "now" + t.id }) { i, t ->
                 TrackRow(t, playing = playerState.current?.id == t.id, onClick = { c.player.play(r.tracks, i) },
-                    downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) })
+                    downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, onSwipeQueue = { c.player.addToQueue(t) })
             }
         }
         val past = found.filterNot { (state as? ShazamState.Found)?.result == it }
@@ -263,7 +263,8 @@ fun ShazamScreen(vm: ShazamViewModel) {
                     Box(Modifier.weight(1f)) {
                         if (t != null) {
                             TrackRow(t, playing = playerState.current?.id == t.id, onClick = { c.player.play(listOf(t), 0) },
-                                downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, trailing = time)
+                                downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, onSwipeQueue = { c.player.addToQueue(t) },
+                                trailing = time)
                         } else {
                             Column(Modifier.padding(16.dp)) {
                                 Text(r.title)
