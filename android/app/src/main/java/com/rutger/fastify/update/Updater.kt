@@ -55,8 +55,7 @@ sealed interface UpdateStatus {
  *   (WorkManager, unmetered network, battery not low), also while the app is closed.
  * - Download + verify sha256.
  * - Install: when Fastify is the installer of record, commit the session with
- *   [PackageInstaller.InstallConstraints] (not foreground, not interacting, e.g. playing, not in a
- *   call). Android itself installs it at the right moment, without UI, even when our process is dead.
+ *   [PackageInstaller.InstallConstraints] (not foreground, so not visible or playing; not in a call). Android itself installs it at the right moment, without UI, even when our process is dead.
  *   Otherwise (first update) Home shows a card and a notification asks for the tap.
  */
 class Updater(
@@ -192,9 +191,9 @@ class Updater(
 
     private fun apkFile(r: Release) = File(dir, "fastify-${r.versionCode}-${r.sha256.take(12)}.apk")
 
-    /** A committed session for [r] that is waiting for its install constraints. */
+    /** Our session for [r], waiting for its install constraints (isCommitted stays false until then). */
     private fun scheduledSession(r: Release) = installer.mySessions.firstOrNull {
-        it.isCommitted && it.appPackageName == app.packageName && sessionVersion(it.sessionId) == r.versionCode
+        it.appPackageName == app.packageName && sessionVersion(it.sessionId) == r.versionCode
     }
 
     private fun sessionVersion(id: Int) = app.getSharedPreferences("update", android.content.Context.MODE_PRIVATE).getInt("session-$id", -1)
@@ -274,9 +273,11 @@ class Updater(
                 _status.value = UpdateStatus.Installing(r)
                 installer.openSession(id).use { it.commit(sender) }
             } else {
+                // Not foreground = not visible and no foreground service, so not playing (PlaybackService).
+                // No setAppNotInteractingRequired: it also counts any network traffic in the last
+                // minutes, and the librespot session's keep-alive would block the install forever.
                 val constraints = PackageInstaller.InstallConstraints.Builder()
                     .setAppNotForegroundRequired()
-                    .setAppNotInteractingRequired()
                     .setNotInCallRequired()
                     .build()
                 installer.commitSessionAfterInstallConstraintsAreMet(id, sender, constraints, CONSTRAINT_TIMEOUT_MS)
