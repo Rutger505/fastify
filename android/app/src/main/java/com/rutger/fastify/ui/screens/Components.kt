@@ -123,12 +123,15 @@ fun TrackRow(
     var width by remember { mutableIntStateOf(1) }
     val threshold = width * 0.3f
     Box(modifier.fillMaxWidth().onSizeChanged { width = it.width.coerceAtLeast(1) }) {
+        val armed = offset.value >= threshold
+        val iconSize by androidx.compose.animation.core.animateDpAsState(if (armed) 36.dp else 24.dp, fast(), label = "queueIcon")
         if (offset.value > 0f) {
             Box(
-                Modifier.matchParentSize().background(if (offset.value >= threshold) Green else MaterialTheme.colorScheme.surfaceVariant)
+                Modifier.matchParentSize().background(Green)
                     .padding(start = 24.dp),
                 contentAlignment = Alignment.CenterStart,
-            ) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue", tint = Color.Black) }
+            ) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue", tint = Color.Black,
+                modifier = Modifier.size(iconSize)) }
         }
         TrackRowContent(
             track, playing, onClick,
