@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioManager
 import android.os.Build
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -21,9 +22,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,7 +35,7 @@ import kotlinx.coroutines.withContext
  * phone's live state. Playing here makes the phone the account's active device (the other one
  * stops); when another device takes over, the phone pauses.
  *
- * Queue items are identified as uid "fy<media item index>" (SkipNext/SetQueue refer to them).
+ * Queue items are identified by their [uid] extra (SkipNext/SetQueue refer to them).
  */
 @UnstableApi
 class ConnectTarget(
@@ -50,16 +50,37 @@ class ConnectTarget(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = context.getSystemService(AudioManager::class.java)
     private val name = "Fastify (${Build.MODEL})"
-    /** Latest state for the core; conflated, sent off the main thread. */
-    private val published = MutableStateFlow<LocalPlayer?>(null)
+    /**
+     * Calls into the core, off the main thread but in order: the state must be in before a
+     * reply or activation, which PUT it right away (else the other device sees the old track).
+     */
+    private val ops = Channel<Op>(Channel.UNLIMITED)
     private var debounce: Job? = null
+    /** Last volume another device set (0..65535) and the stream index it became. */
+    private var remoteVolume: Pair<Int, UInt>? = null
+
+    private sealed interface Op {
+        data class SetPlayer(val player: LocalPlayer) : Op
+        data class Reply(val id: ULong, val ok: Boolean) : Op
+        data object Activate : Op
+        data object Deactivate : Op
+    }
 
     fun start() {
         player.addListener(listener)
-        publishNow()
         scope.launch(Dispatchers.IO) {
-            published.filterNotNull().collect { runCatching { core().connectSetPlayer(it) } }
+            for (op in ops) {
+                runCatching {
+                    when (op) {
+                        is Op.SetPlayer -> core().connectSetPlayer(op.player)
+                        is Op.Reply -> core().connectReply(op.id, op.ok)
+                        Op.Activate -> core().connectActivate()
+                        Op.Deactivate -> core().connectDeactivate()
+                    }
+                }.onFailure { AppLog.w(TAG, "core $op", it) }
+            }
         }
+        publishNow()
         scope.launch {
             var failures = 0
             while (isActive) {
@@ -90,9 +111,12 @@ class ConnectTarget(
         val result = runCatching { execute(req.command) }
         result.onFailure { AppLog.w(TAG, "$what from ${req.fromDeviceId} failed", it) }
             .onSuccess { AppLog.i(TAG, "$what from ${req.fromDeviceId}") }
-        core().connectReply(req.id, result.isSuccess)
         publishNow()
+        if (!req.isEvent) ops.trySend(Op.Reply(req.id, result.isSuccess))
     }
+
+    private val IncomingRequest.isEvent get() = command is ConnectRequest.Volume ||
+        command is ConnectRequest.Deactivated || command is ConnectRequest.Metadata
 
     private fun execute(cmd: ConnectRequest) {
         when (cmd) {
@@ -122,17 +146,58 @@ class ConnectTarget(
                 while (at < player.mediaItemCount && player.getMediaItemAt(at).isQueued) at++
                 player.addMediaItem(at, item)
             }
-            is ConnectRequest.SetQueue -> {
-                val keep = cmd.next.map { it.uid }.toSet()
-                val order = playOrder()
-                val pos = order.indexOf(player.currentMediaItemIndex)
-                order.drop(pos + 1).filter { uid(it) !in keep }.sortedDescending().forEach(player::removeMediaItem)
-            }
+            is ConnectRequest.SetQueue -> setQueue(cmd.next.map { it.uid })
+            is ConnectRequest.Metadata -> fillStubs(cmd)
             is ConnectRequest.Volume -> {
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                audio.setStreamVolume(AudioManager.STREAM_MUSIC, (cmd.volume.toFloat() / 65535 * max).roundToInt(), 0)
+                val index = (cmd.volume.toFloat() / 65535 * max).roundToInt()
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
+                remoteVolume = index to cmd.volume
             }
         }
+    }
+
+    /**
+     * The sender saw only the published window (MAX_NEXT upcoming): drop window items missing
+     * from [wanted], keep everything past it, and follow its order (not while shuffling: the
+     * window is the shuffle order there, not the item order).
+     */
+    private fun setQueue(wanted: List<String>) {
+        val order = playOrder()
+        val window = order.drop(order.indexOf(player.currentMediaItemIndex) + 1).take(MAX_NEXT)
+        val keep = wanted.toSet()
+        window.filter { uid(it) !in keep }.sortedDescending().forEach(player::removeMediaItem)
+        if (player.shuffleModeEnabled) return
+        var target = player.currentMediaItemIndex + 1
+        for (u in wanted) {
+            val from = (target until player.mediaItemCount).firstOrNull { uid(it) == u } ?: continue
+            if (from != target) player.moveMediaItem(from, target)
+            target++
+        }
+    }
+
+    private fun isStub(index: Int) = player.getMediaItemAt(index).mediaMetadata.title.isNullOrEmpty()
+
+    /** Metadata for the stubs of a big Load: replace them in runs (one timeline change each). */
+    private fun fillStubs(cmd: ConnectRequest.Metadata) {
+        val byId = cmd.tracks.associateBy { it.id }
+        var i = 0
+        while (i < player.mediaItemCount) {
+            val run = ArrayList<MediaItem>()
+            var j = i
+            while (j < player.mediaItemCount && isStub(j)) {
+                val old = player.getMediaItemAt(j)
+                val info = byId[old.mediaId] ?: break
+                run += info.toTrack().toMediaItem(old.isAutoplay, old.isQueued, old.uid)
+                j++
+            }
+            if (run.isEmpty()) i++ else { player.replaceMediaItems(i, j, run); i = j }
+        }
+        val missing = cmd.missing.toSet()
+        (0 until player.mediaItemCount)
+            .filter { it != player.currentMediaItemIndex && isStub(it) && player.getMediaItemAt(it).mediaId in missing }
+            .sortedDescending()
+            .forEach(player::removeMediaItem)
     }
 
     private fun load(cmd: ConnectRequest.Load) {
@@ -141,7 +206,8 @@ class ConnectTarget(
         val shuffle = cmd.shuffle ?: player.shuffleModeEnabled
         val start = when {
             cmd.startIndex >= 0 -> cmd.startIndex.coerceAtMost(items.lastIndex)
-            shuffle -> items.indices.random()
+            // Not a stub (big context, metadata still coming).
+            shuffle -> cmd.tracks.indices.filter { cmd.tracks[it].title.isNotEmpty() }.randomOrNull() ?: items.indices.random()
             else -> 0
         }
         setContext(cmd.contextUri)
@@ -185,7 +251,7 @@ class ConnectTarget(
         player.seekToNext()
     }
 
-    private fun uid(index: Int) = "fy$index"
+    private fun uid(index: Int) = player.getMediaItemAt(index).uid
 
     private fun remoteTrack(index: Int): RemoteTrack {
         val item = player.getMediaItemAt(index)
@@ -213,7 +279,8 @@ class ConnectTarget(
         val pos = order.indexOf(cur)
         val playing = player.playWhenReady && player.playbackState in setOf(Player.STATE_READY, Player.STATE_BUFFERING)
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-        published.value = LocalPlayer(
+        val volumeIndex = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val state = LocalPlayer(
             name = name,
             track = if (count > 0 && cur in 0 until count) remoteTrack(cur) else null,
             isPlaying = playing,
@@ -228,18 +295,22 @@ class ConnectTarget(
             contextUri = contextUri(),
             prevTracks = if (pos > 0) order.subList((pos - MAX_PREV).coerceAtLeast(0), pos).map(::remoteTrack) else emptyList(),
             nextTracks = if (pos >= 0) order.drop(pos + 1).take(MAX_NEXT).map(::remoteTrack) else emptyList(),
-            volume = (audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 65535 / max).toUInt(),
+            // Echo what the other device set while the stream is still at that step, else its
+            // slider snaps to the nearest of the phone's ~15 steps.
+            volume = remoteVolume?.takeIf { it.first == volumeIndex }?.second
+                ?: (volumeIndex * 65535 / max).toUInt(),
         )
+        ops.trySend(Op.SetPlayer(state))
     }
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            // Playing here takes over from whatever device was active.
-            if (isPlaying) scope.launch(Dispatchers.IO) { runCatching { core().connectActivate() } }
+            // Playing here takes over from whatever device was active (with the playing state).
+            if (isPlaying) { publishNow(); ops.trySend(Op.Activate) }
         }
 
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
-            if (timeline.isEmpty) scope.launch(Dispatchers.IO) { runCatching { core().connectDeactivate() } }
+            if (timeline.isEmpty) { publishNow(); ops.trySend(Op.Deactivate) }
         }
 
         override fun onEvents(player: Player, events: Player.Events) = publish()

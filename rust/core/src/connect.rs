@@ -29,7 +29,7 @@ use librespot_protocol::player::{ContextPlayerOptions, PlayOrigin, PlayerState, 
 use librespot_protocol::transfer_state::TransferState;
 use protobuf::{EnumOrUnknown, Message as _, MessageField};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::CoreError;
@@ -40,6 +40,16 @@ const MAX_PREV: usize = 10;
 const MAX_NEXT: usize = 80;
 /// Kotlin must answer a command within this, else the sender gets a failure.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+/// We PUT is_active but another device stays active this long: it took over meanwhile.
+const PENDING_GRACE_MS: u64 = 5_000;
+/// Contexts up to this size are hydrated before replying; bigger ones hydrate a window around
+/// the start track first (the sender waits for the reply) and fill the rest in afterwards.
+const HYDRATE_ALL_UP_TO: usize = 300;
+const HYDRATE_BEFORE: usize = 10;
+const HYDRATE_AFTER: usize = 150;
+const FILL_BATCH: usize = 500;
+/// Registration (NEW_DEVICE PUT) failed: try again after this.
+const REGISTER_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(uniffi::Record, Clone, Debug, Default)]
 pub struct RemoteDevice {
@@ -162,8 +172,12 @@ pub enum ConnectRequest {
     SeekTo { position_ms: u64 },
     SetOptions { shuffle: Option<bool>, repeat_context: Option<bool>, repeat_track: Option<bool> },
     AddToQueue { track: TrackInfo },
-    /// New upcoming list: drop upcoming items whose uid is missing.
+    /// New upcoming list (order + removals), uids as published. Covers at most the published
+    /// window (MAX_NEXT): items past it are kept.
     SetQueue { next: Vec<RemoteTrack> },
+    /// Event: metadata for tracks a big Load sent as stubs (id only, empty title). missing:
+    /// ids without metadata (unavailable), drop them.
+    Metadata { tracks: Vec<TrackInfo>, missing: Vec<String> },
     /// 0..=65535.
     Volume { volume: u32 },
     /// Another device took playback over: pause, keep the queue.
@@ -172,7 +186,7 @@ pub enum ConnectRequest {
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct IncomingRequest {
-    /// Pass to reply(). Events (Volume, Deactivated) need no reply.
+    /// Pass to reply(). Events (Volume, Deactivated, Metadata) need no reply.
     pub id: u64,
     pub from_device_id: String,
     pub command: ConnectRequest,
@@ -212,6 +226,10 @@ struct Shared {
     last_command: Mutex<(u32, String)>,
     /// The last PUT announced a player (vs. the hidden observer).
     put_as_player: AtomicBool,
+    /// The last PUT had is_active.
+    put_active: AtomicBool,
+    /// PUT the current state again (cluster changed while we're active).
+    kick: Notify,
 }
 
 impl Shared {
@@ -234,13 +252,18 @@ impl Shared {
     fn activate(&self) {
         {
             let mut a = self.activity.lock().unwrap();
-            if *a != Activity::Inactive || self.local.borrow().is_none() {
+            if self.local.borrow().is_none() {
                 return;
             }
-            *a = Activity::Pending { since_ms: now_ms() };
+            match *a {
+                Activity::Confirmed { .. } => return,
+                // Not confirmed yet: claim it again (the PUT may have raced another device's).
+                Activity::Pending { .. } => {}
+                Activity::Inactive => *a = Activity::Pending { since_ms: now_ms() },
+            }
         }
         log::info!("connect: becoming the active device");
-        self.local.send_modify(|_| {});
+        self.kick.notify_one();
     }
 
     fn deactivate(&self) {
@@ -252,7 +275,7 @@ impl Shared {
             *a = Activity::Inactive;
         }
         log::info!("connect: giving up playback");
-        self.local.send_modify(|_| {});
+        self.kick.notify_one();
     }
 
     /// Cluster from the server (push or PUT response): confirm our activation, or notice that
@@ -264,14 +287,23 @@ impl Shared {
                 log::info!("connect: active device confirmed");
                 *a = Activity::Confirmed { since_ms };
             }
-            Activity::Confirmed { .. }
-                if !c.active_device_id.is_empty() && c.active_device_id != me =>
+            // Confirmed, or pending for a while: another device playing now took over (else a
+            // pending activation that lost the race would never resolve and both would play).
+            Activity::Confirmed { .. } | Activity::Pending { .. }
+                if !c.active_device_id.is_empty()
+                    && c.active_device_id != me
+                    && match *a {
+                        Activity::Pending { since_ms } => {
+                            now_ms().saturating_sub(since_ms) > PENDING_GRACE_MS
+                        }
+                        _ => true,
+                    } =>
             {
                 *a = Activity::Inactive;
                 drop(a);
                 log::info!("connect: {} took playback over", c.active_device_id);
                 self.push(c.active_device_id.clone(), ConnectRequest::Deactivated, None);
-                self.local.send_modify(|_| {});
+                self.kick.notify_one();
             }
             _ => {}
         }
@@ -298,6 +330,8 @@ impl Hub {
                 next_id: AtomicU64::new(0),
                 last_command: Mutex::new((0, String::new())),
                 put_as_player: AtomicBool::new(false),
+                put_active: AtomicBool::new(false),
+                kick: Notify::new(),
             }),
             task: Mutex::new(None),
         }
@@ -428,8 +462,8 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
         log::debug!("dealer start: {e}");
     }
     let me = session.device_id().to_owned();
-    let mut local_rx = sh.local.subscribe();
-    let mut registered = false;
+    // Bumped per connection id: the putter (re)registers.
+    let (reg_tx, reg_rx) = watch::channel(0u64);
     // Commands run one at a time and in order, off this loop (loads resolve contexts).
     let (work_tx, mut work_rx) = mpsc::unbounded_channel::<RequestReply>();
     let _worker = AbortOnDrop({
@@ -440,24 +474,16 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
             }
         })
     });
+    // PUTs run in their own task, one at a time: a slow one must not hold up commands and
+    // cluster updates here.
+    let _putter = AbortOnDrop(tokio::spawn(putter(session.clone(), sh.clone(), reg_rx)));
     let mut check = tokio::time::interval(Duration::from_secs(10));
     loop {
         tokio::select! {
             id = connection_ids.next() => match id {
                 Some(Ok(id)) => {
                     session.set_connection_id(&id);
-                    // (Re)connecting while paused: don't claim playback back, another device
-                    // may have taken over meanwhile.
-                    if !local_rx.borrow_and_update().as_ref().is_some_and(|l| l.is_playing) {
-                        *sh.activity.lock().unwrap() = Activity::Inactive;
-                    }
-                    match put(session, sh, PutStateReason::NEW_DEVICE).await {
-                        Ok(()) => {
-                            registered = true;
-                            log::info!("connect registered (player: {})", sh.local.borrow().is_some());
-                        }
-                        Err(e) => log::warn!("connect register: {e}"),
-                    }
+                    reg_tx.send_modify(|g| *g += 1);
                 }
                 Some(Err(e)) => log::warn!("connection id: {e}"),
                 None => return Err(CoreError::Network { msg: "dealer closed".into() }),
@@ -466,6 +492,11 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
                 Some(Ok(upd)) => if let Some(c) = upd.cluster.as_ref() {
                     publish(&sh.remote, c, &me);
                     sh.on_cluster(c, &me);
+                    // Like spirc: another device changed the cluster while we're active, PUT our
+                    // state again, else their view of our position drifts. Not for our own PUTs.
+                    if c.active_device_id == me && upd.devices_that_changed.iter().any(|d| *d != me) {
+                        sh.kick.notify_one();
+                    }
                 },
                 Some(Err(e)) => log::warn!("cluster update: {e}"),
                 None => return Err(CoreError::Network { msg: "dealer closed".into() }),
@@ -484,24 +515,58 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
                 Some(Err(e)) => log::warn!("volume: {e}"),
                 _ => {}
             },
-            changed = local_rx.changed() => {
-                if changed.is_err() { continue; }
-                // Attaching/detaching the player changes the device itself.
-                let player = local_rx.borrow_and_update().is_some();
-                let reason = if player != sh.put_as_player.load(Ordering::Relaxed) {
-                    PutStateReason::NEW_DEVICE
-                } else {
-                    PutStateReason::PLAYER_STATE_CHANGED
-                };
-                if registered {
-                    if let Err(e) = put(session, sh, reason).await {
-                        log::warn!("connect put state: {e}");
-                    }
-                }
-            },
             _ = check.tick() => if session.is_invalid() {
                 return Err(CoreError::Network { msg: "session closed".into() });
             },
+        }
+    }
+}
+
+/// Registers on every new connection id, then PUTs the state on every local change or kick.
+async fn putter(session: Session, sh: Arc<Shared>, mut reg: watch::Receiver<u64>) {
+    let mut local_rx = sh.local.subscribe();
+    let mut registered = false;
+    let mut retry_register = false;
+    loop {
+        let register = tokio::select! {
+            r = reg.changed() => { if r.is_err() { return; } true }
+            r = local_rx.changed() => { if r.is_err() { return; } false }
+            () = sh.kick.notified() => false,
+            () = tokio::time::sleep(REGISTER_RETRY), if retry_register => true,
+        };
+        local_rx.borrow_and_update();
+        if register {
+            reg.borrow_and_update();
+            // (Re)connecting while paused: don't claim playback back, another device may have
+            // taken over meanwhile.
+            if !sh.local.borrow().as_ref().is_some_and(|l| l.is_playing) {
+                *sh.activity.lock().unwrap() = Activity::Inactive;
+            }
+            match put(&session, &sh, PutStateReason::NEW_DEVICE).await {
+                Ok(()) => {
+                    registered = true;
+                    retry_register = false;
+                    log::info!("connect registered (player: {})", sh.local.borrow().is_some());
+                }
+                Err(e) => {
+                    retry_register = true;
+                    log::warn!("connect register: {e}");
+                }
+            }
+            continue;
+        }
+        if !registered {
+            continue;
+        }
+        // Attaching/detaching the player changes the device itself.
+        let player = sh.local.borrow().is_some();
+        let reason = if player != sh.put_as_player.load(Ordering::Relaxed) {
+            PutStateReason::NEW_DEVICE
+        } else {
+            PutStateReason::PLAYER_STATE_CHANGED
+        };
+        if let Err(e) = put(&session, &sh, reason).await {
+            log::warn!("connect put state: {e}");
         }
     }
 }
@@ -510,8 +575,16 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
 async fn put(session: &Session, sh: &Arc<Shared>, reason: PutStateReason) -> Result<(), CoreError> {
     let req = state_request(session, sh, reason);
     let player = req.device.device_info.capabilities.can_be_player;
+    // Giving up playback: tell the server explicitly, like spirc, else other clients can keep
+    // showing this device as the one playing.
+    if !req.is_active && sh.put_active.load(Ordering::Relaxed) {
+        if let Err(e) = session.spclient().put_connect_state_inactive(false).await {
+            log::warn!("connect inactive: {e}");
+        }
+    }
     let bytes = session.spclient().put_connect_state_request(&req).await?;
     sh.put_as_player.store(player, Ordering::Relaxed);
+    sh.put_active.store(req.is_active, Ordering::Relaxed);
     let cluster = Cluster::parse_from_bytes(&bytes).map_err(CoreError::other)?;
     let me = session.device_id();
     publish(&sh.remote, &cluster, me);
@@ -659,7 +732,12 @@ async fn handle_command(
         return;
     }
     match to_request(session, req.command).await {
-        Ok(Some((cmd, activates))) => sh.push(from, cmd, Some((reply, activates))),
+        Ok(Some((cmd, activates, stubs))) => {
+            sh.push(from.clone(), cmd, Some((reply, activates)));
+            if !stubs.is_empty() {
+                tokio::spawn(fill_stubs(session.clone(), sh.clone(), from, stubs));
+            }
+        }
         Ok(None) => {
             let _ = reply.send(Reply::Success);
         }
@@ -670,20 +748,40 @@ async fn handle_command(
     }
 }
 
-/// Dealer command -> request for the player, plus whether success makes us the active device.
-/// None: nothing for the player to do (acknowledged right away).
+/// Ids a Load sent as stubs: hydrate them in batches and send their metadata after the Load.
+async fn fill_stubs(session: Session, sh: Arc<Shared>, from: String, ids: Vec<String>) {
+    for chunk in ids.chunks(FILL_BATCH) {
+        match library::hydrate_tracks(&session, chunk).await {
+            Ok(tracks) => {
+                let found: std::collections::HashSet<&str> =
+                    tracks.iter().map(|t| t.id.as_str()).collect();
+                let missing = chunk.iter().filter(|id| !found.contains(id.as_str())).cloned().collect();
+                sh.push(from.clone(), ConnectRequest::Metadata { tracks, missing }, None);
+            }
+            Err(e) => log::warn!("connect: metadata for {} queued tracks: {e}", chunk.len()),
+        }
+    }
+}
+
+/// Dealer command -> request for the player, whether success makes us the active device, and
+/// stub ids to fill in afterwards (fill_stubs). None: nothing for the player to do
+/// (acknowledged right away).
 async fn to_request(
     session: &Session,
     command: Command,
-) -> Result<Option<(ConnectRequest, bool)>, CoreError> {
+) -> Result<Option<(ConnectRequest, bool, Vec<String>)>, CoreError> {
     use ConnectRequest as R;
     let none = |shuffle, repeat_context, repeat_track| R::SetOptions { shuffle, repeat_context, repeat_track };
     let r = match command {
         Command::Transfer(t) => {
             let data = t.data.ok_or_else(|| CoreError::NotFound { msg: "transfer without data".into() })?;
-            (load_from_transfer(session, data).await?, true)
+            let (load, stubs) = load_from_transfer(session, data).await?;
+            return Ok(Some((load, true, stubs)));
         }
-        Command::Play(p) => (load_from_play(session, *p).await?, true),
+        Command::Play(p) => {
+            let (load, stubs) = load_from_play(session, *p).await?;
+            return Ok(Some((load, true, stubs)));
+        }
         Command::Pause(_) => (R::Pause, false),
         Command::Resume(_) => (R::Resume, true),
         Command::SeekTo(s) => (R::SeekTo { position_ms: s.value as u64 }, false),
@@ -713,7 +811,7 @@ async fn to_request(
             return Err(CoreError::NotFound { msg: format!("unsupported command {v}") });
         }
     };
-    Ok(Some(r))
+    Ok(Some((r.0, r.1, Vec::new())))
 }
 
 fn context_uri_of(ctx: &librespot_protocol::context::Context) -> Option<String> {
@@ -746,42 +844,85 @@ async fn context_ids(session: &Session, ctx: &librespot_protocol::context::Conte
     ids
 }
 
-/// Hydrate ids and find the start: start_id (put in front when not in the list), else
-/// fallback_index, else -1.
+fn stub(id: &str) -> TrackInfo {
+    TrackInfo {
+        id: id.to_owned(),
+        title: String::new(),
+        artists: String::new(),
+        album: String::new(),
+        image_url: None,
+        duration_ms: 0,
+        artist_refs: Vec::new(),
+        album_id: None,
+    }
+}
+
+/// Hydrate ids and find the start: start_id (put in front when not in the list), else -1.
+/// Big contexts: only a window around the start is hydrated now (the sender waits for the
+/// reply), the rest come back as stubs (returned ids) for fill_stubs.
 async fn hydrate_with_start(
     session: &Session,
     mut ids: Vec<String>,
     start_id: Option<String>,
-    fallback_index: Option<usize>,
-) -> Result<(Vec<TrackInfo>, i32), CoreError> {
+) -> Result<(Vec<TrackInfo>, i32, Vec<String>), CoreError> {
     if let Some(id) = &start_id {
         if !ids.contains(id) {
             ids.insert(0, id.clone());
         }
     }
-    let tracks = library::hydrate_tracks(session, &ids).await?;
-    let start = match &start_id {
-        Some(id) => tracks.iter().position(|t| &t.id == id),
-        None => fallback_index.filter(|&i| i < tracks.len()),
+    let at = start_id.as_ref().and_then(|id| ids.iter().position(|i| i == id)).unwrap_or(0);
+    let window = if ids.len() <= HYDRATE_ALL_UP_TO {
+        0..ids.len()
+    } else {
+        at.saturating_sub(HYDRATE_BEFORE)..(at + HYDRATE_AFTER).min(ids.len())
     };
+    let hydrated = library::hydrate_tracks(session, &ids[window.clone()]).await?;
+    let mut by_id: HashMap<String, TrackInfo> =
+        hydrated.into_iter().map(|t| (t.id.clone(), t)).collect();
+    let mut stubs = Vec::new();
+    let mut tracks = Vec::with_capacity(ids.len());
+    for (i, id) in ids.iter().enumerate() {
+        if window.contains(&i) {
+            // No metadata: unavailable, drop it.
+            if let Some(t) = by_id.remove(id) {
+                tracks.push(t);
+            }
+        } else {
+            stubs.push(id.clone());
+            tracks.push(stub(id));
+        }
+    }
     if tracks.is_empty() {
         return Err(CoreError::NotFound { msg: "nothing playable in this context".into() });
     }
-    Ok((tracks, start.map_or(-1, |i| i as i32)))
+    let start = start_id.and_then(|id| tracks.iter().position(|t| t.id == id));
+    Ok((tracks, start.map_or(-1, |i| i as i32), stubs))
 }
 
 fn track_id(uri: &str) -> Option<String> {
     library::id_from_uri(uri.split('?').next().unwrap_or(""), "track").map(str::to_owned)
 }
 
-async fn load_from_play(session: &Session, p: PlayCommand) -> Result<ConnectRequest, CoreError> {
+async fn load_from_play(
+    session: &Session,
+    p: PlayCommand,
+) -> Result<(ConnectRequest, Vec<String>), CoreError> {
     let ids = context_ids(session, &p.context).await;
     let skip = p.options.skip_to.clone().unwrap_or_default();
-    let start_id = skip.track_uri.as_deref().and_then(track_id);
-    let (tracks, start_index) =
-        hydrate_with_start(session, ids, start_id, skip.track_index.map(|i| i as usize)).await?;
+    // skip_to names the start by uri, uid (of a context page track) or index; resolve it to an
+    // id before hydrating, which drops unavailable tracks and so shifts indices.
+    let start_id = skip
+        .track_uri
+        .as_deref()
+        .and_then(track_id)
+        .or_else(|| {
+            let uid = skip.track_uid.as_deref().filter(|u| !u.is_empty())?;
+            p.context.pages.iter().flat_map(|pg| pg.tracks.iter()).find(|t| t.uid() == uid).and_then(|t| track_id(t.uri()))
+        })
+        .or_else(|| skip.track_index.and_then(|i| ids.get(i as usize).cloned()));
+    let (tracks, start_index, stubs) = hydrate_with_start(session, ids, start_id).await?;
     let over = p.options.player_options_override.as_ref();
-    Ok(ConnectRequest::Load {
+    Ok((ConnectRequest::Load {
         tracks,
         start_index,
         position_ms: p.options.seek_to.unwrap_or_default() as u64,
@@ -791,10 +932,13 @@ async fn load_from_play(session: &Session, p: PlayCommand) -> Result<ConnectRequ
         repeat_context: over.and_then(|o| o.repeating_context),
         repeat_track: over.and_then(|o| o.repeating_track),
         queued: Vec::new(),
-    })
+    }, stubs))
 }
 
-async fn load_from_transfer(session: &Session, t: TransferState) -> Result<ConnectRequest, CoreError> {
+async fn load_from_transfer(
+    session: &Session,
+    t: TransferState,
+) -> Result<(ConnectRequest, Vec<String>), CoreError> {
     let ctx = t.current_session.context.clone().unwrap_or_default();
     let playing_queue = t.queue.is_playing_queue();
     let current = if playing_queue { t.queue.tracks.first() } else { t.playback.current_track.as_ref() };
@@ -804,7 +948,7 @@ async fn load_from_transfer(session: &Session, t: TransferState) -> Result<Conne
         ctx.uri, start_id, t.queue.tracks.len(), t.playback.is_paused()
     );
     let ids = context_ids(session, &ctx).await;
-    let (tracks, start_index) = hydrate_with_start(session, ids, start_id, None).await?;
+    let (tracks, start_index, stubs) = hydrate_with_start(session, ids, start_id).await?;
     let queued_ids: Vec<String> = t
         .queue
         .tracks
@@ -823,7 +967,7 @@ async fn load_from_transfer(session: &Session, t: TransferState) -> Result<Conne
         position += now_ms().saturating_sub(t.playback.timestamp() as u64);
     }
     let opts = t.options.as_ref();
-    Ok(ConnectRequest::Load {
+    Ok((ConnectRequest::Load {
         tracks,
         start_index,
         position_ms: position,
@@ -833,17 +977,13 @@ async fn load_from_transfer(session: &Session, t: TransferState) -> Result<Conne
         repeat_context: Some(opts.is_some_and(|o| o.repeating_context())),
         repeat_track: Some(opts.is_some_and(|o| o.repeating_track())),
         queued,
-    })
+    }, stubs))
 }
 
 // ---- Cluster -> RemoteState, remote control ----
 
 fn remote_track(t: &ProvidedTrack) -> RemoteTrack {
     RemoteTrack { uri: t.uri.clone(), uid: t.uid.clone(), provider: t.provider.clone() }
-}
-
-fn playable(t: &&ProvidedTrack) -> bool {
-    t.uri.starts_with("spotify:track:")
 }
 
 fn publish(tx: &watch::Sender<RemoteState>, c: &Cluster, me: &str) {
@@ -885,8 +1025,9 @@ fn publish(tx: &watch::Sender<RemoteState>, c: &Cluster, me: &str) {
         next.repeat_context = opts.is_some_and(|o| o.repeating_context);
         next.repeat_track = opts.is_some_and(|o| o.repeating_track);
         next.context_uri = Some(p.context_uri.clone()).filter(|u| !u.is_empty());
-        next.prev_tracks = p.prev_tracks.iter().filter(playable).map(remote_track).collect();
-        next.next_tracks = p.next_tracks.iter().filter(playable).map(remote_track).collect();
+        // Unfiltered (delimiters, episodes too): set_queue sends them back as they were.
+        next.prev_tracks = p.prev_tracks.iter().map(remote_track).collect();
+        next.next_tracks = p.next_tracks.iter().map(remote_track).collect();
         next.queue_revision = p.queue_revision.clone();
     }
     tx.send_modify(|st| {

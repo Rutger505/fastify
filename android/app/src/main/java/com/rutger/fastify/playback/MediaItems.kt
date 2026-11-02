@@ -15,6 +15,10 @@ private const val EXTRA_ARTIST_NAMES = "fastify.artistNames"
 private const val EXTRA_ALBUM_ID = "fastify.albumId"
 private const val EXTRA_AUTOPLAY = "fastify.autoplay"
 private const val EXTRA_QUEUED = "fastify.queued"
+private const val EXTRA_UID = "fastify.uid"
+
+/** Queue item id for Spotify Connect (uid): stays the same while items around it move. */
+fun newUid(): String = "fy" + java.lang.Long.toHexString(kotlin.random.Random.nextLong())
 
 fun trackUri(id: String): Uri = Uri.Builder().scheme(TRACK_SCHEME).authority("track").appendPath(id).build()
 
@@ -22,7 +26,7 @@ fun trackUri(id: String): Uri = Uri.Builder().scheme(TRACK_SCHEME).authority("tr
  * `autoplay`: a recommendation appended after the queue ran out (shown under "Recommended").
  * `queued`: added by hand ("Add to queue"): plays before the rest, never shuffled.
  */
-fun Track.toMediaItem(autoplay: Boolean = false, queued: Boolean = false): MediaItem = MediaItem.Builder()
+fun Track.toMediaItem(autoplay: Boolean = false, queued: Boolean = false, uid: String = newUid()): MediaItem = MediaItem.Builder()
     .setMediaId(id)
     .setUri(trackUri(id))
     .setMediaMetadata(
@@ -43,6 +47,7 @@ fun Track.toMediaItem(autoplay: Boolean = false, queued: Boolean = false): Media
                     albumId?.let { putString(EXTRA_ALBUM_ID, it) }
                     if (autoplay) putBoolean(EXTRA_AUTOPLAY, true)
                     if (queued) putBoolean(EXTRA_QUEUED, true)
+                    putString(EXTRA_UID, uid)
                 },
             )
             .build(),
@@ -67,6 +72,8 @@ fun MediaItem.toTrack(): Track {
 
 val MediaItem.isAutoplay: Boolean get() = mediaMetadata.extras?.getBoolean(EXTRA_AUTOPLAY) == true
 val MediaItem.isQueued: Boolean get() = mediaMetadata.extras?.getBoolean(EXTRA_QUEUED) == true
+/** See [newUid]. Items from older builds have none: fall back to the track id. */
+val MediaItem.uid: String get() = mediaMetadata.extras?.getString(EXTRA_UID) ?: "fy$mediaId"
 
 /** Controllers strip the URI from media items; rebuild it from the media id. */
 fun MediaItem.withPlayableUri(): MediaItem =

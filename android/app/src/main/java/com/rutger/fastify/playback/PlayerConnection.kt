@@ -146,14 +146,14 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
     }
 
     fun stopAndClear() {
-        if (remoteOn) { remote.pause(); remote.detach() }
+        if (remoteOn) { remote.pause(); remote.detach(dismiss = true) }
         withController { setContext(null); stop(); clearMediaItems() }
     }
 
     /** Device picker "This phone": transfer playback from the active device here. */
     fun transferHere() {
         val active = remote.state.value?.activeDeviceId
-        if (active == null) remote.detach() else remote.transfer(from = active, to = null)
+        if (active == null) remote.detach(dismiss = true) else remote.transfer(from = active, to = null)
     }
 
     /**
@@ -207,8 +207,9 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
 
     private fun refresh(full: Boolean) {
         val c = controller ?: return
+        val before = _state.value
         // Playing on the phone (notification, Bluetooth, a transfer here) ends remote control.
-        if (c.isPlaying && !_state.value.isPlaying) remote.detach()
+        if (c.isPlaying && !before.isPlaying) remote.detach(dismiss = false)
         val queue = if (full) (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toTrack() } else _state.value.queue
         val autoplayFrom = if (full) (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).isAutoplay } ?: -1
         else _state.value.autoplayFrom
@@ -228,6 +229,8 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
             queued = if (full) (0 until c.mediaItemCount).filter { c.getMediaItemAt(it).isQueued }.toSet() else _state.value.queued,
             error = c.playerError?.let(::describe),
         )
+        // E.g. another device took over and paused the phone: the remote may attach to it now.
+        if (before.isPlaying != c.isPlaying || before.current?.id != _state.value.current?.id) remote.localChanged()
     }
 
     private val listener = object : Player.Listener {

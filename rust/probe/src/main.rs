@@ -7,6 +7,7 @@
 //!   fastify-probe <data-dir> pladd <playlist> <track> | plrm <playlist> <track> <occurrence>
 //!   fastify-probe <data-dir> like|unlike <track> | download <track>
 //!   fastify-probe <data-dir> target <name> [secs] [track]  # act as a Connect player, print commands
+//!     (PROBE_NO_ACTIVATE=1: refuse loads/resumes, never becomes the active device)
 //!   fastify-probe <data-dir> shazam <file.s16>  # raw 16 kHz mono s16le, e.g. ffmpeg -i x.mp3 -ss 60 -t 12 -ac 1 -ar 16000 -f s16le x.s16
 //!
 //! The OAuth redirect goes to 127.0.0.1:8898 on this machine. When logging in from another
@@ -322,7 +323,7 @@ async fn target(core: Arc<FastifyCore>, name: String, secs: u64, track: Option<S
         let cur = |pos: u64, at: u64, playing: bool| if playing { pos + (now() - at) } else { pos };
         match &req.command {
             R::Load { tracks, start_index, position_ms, paused, context_uri, shuffle: sh, repeat_context, repeat_track, queued } => {
-                println!("LOAD {} tracks start={start_index} pos={position_ms} paused={paused} ctx={context_uri:?} shuffle={sh:?} repeat={repeat_context:?}/{repeat_track:?} queued={}", tracks.len(), queued.len());
+                println!("LOAD {} tracks ({} stubs) start={start_index} pos={position_ms} paused={paused} ctx={context_uri:?} shuffle={sh:?} repeat={repeat_context:?}/{repeat_track:?} queued={}", tracks.len(), tracks.iter().filter(|t| t.title.is_empty()).count(), queued.len());
                 for t in tracks.iter().skip((*start_index).max(0) as usize).take(3) { println!("    {} - {} ({})", t.title, t.artists, t.id) }
                 index = (*start_index).max(0) as usize;
                 queue = tracks.iter().map(|t| (t.id.clone(), "context".to_string())).collect();
@@ -360,9 +361,18 @@ async fn target(core: Arc<FastifyCore>, name: String, secs: u64, track: Option<S
             }
             R::Volume { volume: v } => { volume = *v; println!("VOLUME {v}") }
             R::Deactivated => { pos = cur(pos, at, playing); at = now(); playing = false; println!("DEACTIVATED by {}", req.from_device_id) }
+            R::Metadata { tracks, missing } => {
+                queue.retain(|(id, _)| !missing.contains(id));
+                println!("METADATA {} tracks, {} missing", tracks.len(), missing.len());
+            }
         }
-        core.connect_reply(req.id, true);
+        // State first: the reply can make us active, which PUTs the state right away.
         core.connect_set_player(Some(state(&queue, index, playing, pos, at, shuffle, repeat, &ctx, volume)));
+        // PROBE_NO_ACTIVATE=1: fail loads/resumes so the probe never takes playback over (test
+        // while another device plays without stopping it).
+        let refuse = std::env::var("PROBE_NO_ACTIVATE").is_ok_and(|v| v == "1")
+            && matches!(req.command, R::Load { .. } | R::Resume);
+        core.connect_reply(req.id, !refuse);
     }
     watcher.abort();
     core.connect_set_player(None);

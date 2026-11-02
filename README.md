@@ -46,21 +46,31 @@ can move playback anywhere, both ways.
   Play/transfer contexts are resolved in Rust (playlist/album/collection like the library
   screens, else context-resolve with paging) and hydrated before Kotlin gets them.
 - Outgoing: `ConnectTarget` publishes the ExoPlayer state (track, position + timestamp, prev/next in
-  play order, options, volume) on every player event; the core PUTs it. Queue uids are
-  `fy<media item index>`.
+  play order, options, volume) on every player event; the core PUTs it from its own task (serialized, never blocks
+  commands). Queue uids are stable per media item (`uid` extra, `MediaItems.kt`), not indices.
+  State goes to the core before a reply/activation (ordered `ops` channel), else others see the
+  old track.
+- Big contexts (> 300 tracks): only a window around the start is hydrated before replying (the
+  sender times out otherwise); the rest arrive as stubs, filled by `Metadata` events.
 - Active device: playing locally (or a successful play/transfer) makes the phone active (the
-  other device stops). The server has to confirm it (cluster names us); after that another
-  active device in a cluster update means it took over -> `Deactivated` -> phone pauses.
+  other device stops). The server has to confirm it (cluster names us); after that (or 5 s
+  pending) another active device in a cluster means it took over -> `Deactivated` -> phone
+  pauses. Giving up uses `put_connect_state_inactive` like spirc. While active, cluster changes
+  by other devices re-PUT our state (spirc's position-drift workaround).
+- Dealer: FASTIFY PATCH in vendor `dealer/mod.rs` retries a failed url/token fetch; upstream
+  ends the dealer for good (Connect silently dead while the session lives).
 - Transfers: `connect_transfer(from, to)`; from this phone the core PUTs the state as active
   first, the server builds the transfer from it.
 - `ConnectRemote` attaches the player UI to another device when it plays and the phone doesn't;
   `PlayerConnection` then routes mini player, player and queue there. Device picker = transfers.
+  Re-decided on cluster and local changes; after a transfer, stale clusters naming the old
+  device are ignored for 8 s.
 - Pitfalls: server 403s commands the target rejects (pause while paused). Paused state must be
   `is_playing + is_paused + is_buffering` (like spirc), else the desktop greys out play. Never
   leave `context_uri` empty (falls back to the current track).
 - Probe: `fastify-probe <dir> connect` prints the cluster, `cmd <device> pause|next|transfer <to>|...`
   sends one, `target <name> [secs] [track]` acts as a simulated player (with a track it becomes
-  active). Test with two probe dirs (copy `credentials/`, own `keys/device_id`), not the PC:
+  active; `PROBE_NO_ACTIVATE=1` refuses loads so it never takes playback from a device in use). Test with two probe dirs (copy `credentials/`, own `keys/device_id`), not the PC:
   PC playback is Rutger's, don't start/stop it without asking.
 - Not reachable when the service is gone (app closed and not playing).
 

@@ -30,7 +30,9 @@ import kotlinx.coroutines.sync.withLock
  * loaded); detaches when nothing is active any more, or when local playback starts.
  */
 class ConnectRemote(private val core: () -> FastifyCore, private val local: () -> PlayerUiState) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** One at a time: cluster updates and local changes both decide [target]. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
     private val _state = MutableStateFlow<RemoteState?>(null)
     /** Latest cluster state, null until the first one arrives. */
     val state: StateFlow<RemoteState?> = _state
@@ -52,6 +54,11 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
     private var starts = 0
     /** Device + track the user switched away from; no auto-attach until that changes. */
     @Volatile private var dismissed: Pair<String, String?>? = null
+    /**
+     * Transfer in flight to this device (null = the phone) until the deadline: cluster states
+     * that still name the old device are stale, don't follow or detach on them.
+     */
+    @Volatile private var expect: Pair<String?, Long>? = null
 
     /** Watch the cluster while the app is visible. Pair every call with [stop]. */
     @Synchronized
@@ -109,12 +116,28 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
 
     private suspend fun onState(s: RemoteState) {
         _state.value = s
+        decide()
+        render()
+        hydrate(s)
+    }
+
+    /** The phone's own playback changed (paused by a takeover, started, cleared). */
+    fun localChanged() {
+        scope.launch { decide(); render() }
+    }
+
+    /** Follow the active device, or attach to it when it plays and the phone doesn't. */
+    private fun decide() {
+        val s = _state.value ?: return
         val active = s.activeDeviceId
+        expect?.let { (device, until) ->
+            if (active == device || System.currentTimeMillis() > until) expect = null else return
+        }
         val t = _target.value
         when {
             // Playback moved (e.g. PC -> speaker from the desktop app): follow it.
             t != null && active != null && active != t -> _target.value = active
-            t != null && active == null -> detach()
+            t != null && active == null -> detach(dismiss = false)
             t == null && active != null && s.track != null && dismissed != (active to s.track?.uri) &&
                 local().let { l -> (s.isPlaying && !l.isPlaying) || l.current == null } -> {
                 AppLog.i(TAG, "attach to ${s.devices.find { it.id == active }?.name ?: active}")
@@ -122,14 +145,15 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
                 _target.value = active
             }
         }
-        render()
-        hydrate(s)
     }
 
-    /** Stop controlling the remote device (it keeps its state). */
-    fun detach() {
+    /**
+     * Stop controlling the remote device (it keeps its state). [dismiss]: the user chose the
+     * phone, don't auto-attach to that device + track again.
+     */
+    fun detach(dismiss: Boolean) {
         val t = _target.value ?: return
-        dismissed = t to _state.value?.track?.uri
+        if (dismiss) dismissed = t to _state.value?.track?.uri
         _target.value = null
         _ui.value = null
     }
@@ -150,12 +174,13 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         val t = _target.value
         if (s == null || t == null) { _ui.value = null; return }
         val name = s.devices.find { it.id == t }?.name ?: "another device"
+        val prev = s.prevTracks.filter(::playable)
         val all = buildList {
-            addAll(s.prevTracks)
+            addAll(prev)
             s.track?.let(::add)
-            addAll(s.nextTracks)
+            addAll(s.nextTracks.filter(::playable))
         }
-        val index = if (s.track != null) s.prevTracks.size else -1
+        val index = if (s.track != null) prev.size else -1
         _ui.value = PlayerUiState(
             connected = true,
             current = s.track?.let(::trackOf),
@@ -178,9 +203,13 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         )
     }
 
+    /** Delimiters, episodes etc. stay in the state (set_queue sends them back), not in the UI. */
+    private fun playable(t: RemoteTrack) = t.uri.startsWith("spotify:track:")
+
     /** Fetch titles/covers for the visible part of the queue. */
     private suspend fun hydrate(s: RemoteState) = hydrating.withLock {
-        val ids = (listOfNotNull(s.track) + s.nextTracks.take(HYDRATE_AHEAD) + s.prevTracks.takeLast(HYDRATE_BEHIND))
+        val ids = (listOfNotNull(s.track) + s.nextTracks.filter(::playable).take(HYDRATE_AHEAD) +
+            s.prevTracks.filter(::playable).takeLast(HYDRATE_BEHIND))
             .map { it.uri.removePrefix("spotify:track:") }
             .filter { !meta.containsKey(it) }
             .distinct()
@@ -223,18 +252,23 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
 
     fun addToQueue(track: Track) = send(RemoteCommand.AddToQueue(track.id))
 
-    /** [index] in [ui]'s queue (prev + current + next). */
+    /** [index] in [ui]'s queue (prev + current + next, playable only). */
     fun playQueueIndex(index: Int) {
         val s = _state.value ?: return
-        val cur = s.prevTracks.size
+        val cur = s.prevTracks.count(::playable)
         when {
-            index > cur -> s.nextTracks.getOrNull(index - cur - 1)?.let { send(RemoteCommand.SkipTo(it)) }
+            index > cur -> s.nextTracks.filter(::playable).getOrNull(index - cur - 1)?.let { send(RemoteCommand.SkipTo(it)) }
             index < cur -> scope.launch {
-                // No "jump back to" command: step back one track at a time.
+                // No "jump back to" command: step back one track at a time. Seek to 0 first,
+                // else the first skip_prev only restarts the current track (past 3 s).
                 val device = _target.value ?: return@launch
-                repeat(cur - index) {
-                    runCatching { core().connectCommand(device, RemoteCommand.SkipPrev) }
-                        .onFailure { AppLog.w(TAG, "skip back", it) }
+                runCatching {
+                    core().connectCommand(device, RemoteCommand.SeekTo(0UL))
+                    repeat(cur - index) { core().connectCommand(device, RemoteCommand.SkipPrev) }
+                }.onFailure { e ->
+                    AppLog.w(TAG, "skip back", e)
+                    error = "Connect skip back: ${e.message}"
+                    render()
                 }
             }
         }
@@ -242,8 +276,8 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
 
     fun removeFromQueue(index: Int) {
         val s = _state.value ?: return
-        val i = index - s.prevTracks.size - 1
-        if (i !in s.nextTracks.indices) return
+        val item = s.nextTracks.filter(::playable).getOrNull(index - s.prevTracks.count(::playable) - 1) ?: return
+        val i = s.nextTracks.indexOf(item)
         send(RemoteCommand.SetQueue(s.nextTracks.filterIndexed { j, _ -> j != i }, s.prevTracks, s.queueRevision))
     }
 
@@ -267,7 +301,8 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
             }
                 .onSuccess {
                     error = null
-                    if (to != null) attach(to) else detach()
+                    expect = to to System.currentTimeMillis() + TRANSFER_SETTLE_MS
+                    if (to != null) attach(to) else detach(dismiss = false)
                 }
                 .onFailure { e ->
                     AppLog.w(TAG, "transfer ${from ?: "phone"} -> ${to ?: "phone"} failed", e)
@@ -281,5 +316,6 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         private const val TAG = "Connect"
         private const val HYDRATE_AHEAD = 50
         private const val HYDRATE_BEHIND = 10
+        private const val TRANSFER_SETTLE_MS = 8_000L
     }
 }
