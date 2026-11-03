@@ -40,6 +40,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -94,13 +99,28 @@ private fun AppContainer.write(context: Context, what: String, done: String, blo
 
 /**
  * Spotify-style action sheet: slides up from the bottom, drag it down (or tap outside) to close.
+ *
+ * Two material3 1.4 quirks made a list inside the sheet (queue) fight the sheet when scrolling down:
+ * - While the sheet animates (the ~0.5 s open spring, settles), its draggable starts immediately and
+ *   steals the gesture from the list; releasing then springs the sheet past its top (stretch up).
+ *   So sheet gestures are off while it animates.
+ * - A fling hitting the end of the list hands its leftover upward velocity to the sheet, which
+ *   overshoots upward the same way. Upward leftovers are swallowed here; the sheet only goes down.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FastifySheet(onDismiss: () -> Unit, state: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), content: @Composable () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
-        Column(Modifier.navigationBarsPadding().padding(bottom = 8.dp)) { content() }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, sheetGesturesEnabled = !state.isAnimationRunning) {
+        Column(Modifier.nestedScroll(NoUpwardLeftovers).navigationBarsPadding().padding(bottom = 8.dp)) { content() }
     }
+}
+
+private object NoUpwardLeftovers : NestedScrollConnection {
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource) =
+        Offset(0f, available.y.coerceAtMost(0f))
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity) =
+        Velocity(0f, available.y.coerceAtMost(0f))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
