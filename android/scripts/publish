@@ -19,7 +19,7 @@ DEST="${FASTIFY_CDN_DEST:-rcdn/artifacts/fastify}"
 URL="${FASTIFY_CDN_URL:-https://cdn.rutgerpronk.com/artifacts/fastify}"
 ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/share/android-sdk}"
 AAPT2="$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
-TMP="$HOME/Temporary/fastify-publish"
+TMP="/tmp/fastify-publish"
 KEEP=3
 
 die() { echo "publish: $*" >&2; exit 1; }

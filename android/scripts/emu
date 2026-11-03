@@ -14,7 +14,7 @@
 #   emu start | stop      boot (and wait) / shut down our emulator only
 #   emu install           install the x86_64 debug APK
 #   emu launch            force-stop + start the app, then 'emu ui'
-#   emu ui                screenshot (~/Temporary/fastify-screen.png) + focus + visible texts
+#   emu ui                screenshot (/tmp/fastify-screen.png) + focus + visible texts
 #   emu logs [N]          last N (200) Fastify/fastify-core/AndroidRuntime lines since launch
 #   emu tap X Y           tap screen coordinates (720x1280)
 #   emu tap "text" [n]    tap the n-th (1) node whose text/content-desc is exactly "text"
@@ -39,7 +39,7 @@ export ANDROID_SERIAL="emulator-$PORT"
 PKG=com.rutger.fastify
 ANDROID_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APK="$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk"
-TMP="$HOME/Temporary"
+TMP="/tmp"
 LOG="$TMP/fastify-emulator.log"
 BUILD_LOG="$TMP/fastify-gradle.log"
 SHOT="$TMP/fastify-screen.png"
