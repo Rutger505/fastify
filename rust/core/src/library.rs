@@ -372,11 +372,21 @@ pub(crate) async fn context_track_ids(session: &Session, uri: &str) -> Result<Ve
 }
 
 pub(crate) fn page_track_ids(tracks: &[librespot_protocol::context_track::ContextTrack], out: &mut Vec<String>) {
-    out.extend(
-        tracks
-            .iter()
-            .filter_map(|t| id_from_uri(t.uri().split('?').next().unwrap_or(""), "track").map(str::to_owned)),
-    );
+    out.extend(tracks.iter().filter_map(context_track_id));
+}
+
+/// Track id of a context track. The desktop client sends autoplay tracks (and their context
+/// pages) with uri "": then the id is in requested_uri / gid. Non-tracks (episodes): None.
+pub(crate) fn context_track_id(t: &librespot_protocol::context_track::ContextTrack) -> Option<String> {
+    let clean = |u: &str| u.split('?').next().unwrap_or("").to_owned();
+    let uri = clean(t.uri());
+    if !uri.is_empty() {
+        return id_from_uri(&uri, "track").map(str::to_owned);
+    }
+    if let Some(req) = t.metadata.get("requested_uri").map(|u| clean(u)).filter(|u| !u.is_empty()) {
+        return id_from_uri(&req, "track").map(str::to_owned);
+    }
+    base62(t.gid()).filter(|_| t.gid().len() == 16)
 }
 
 /// Liked songs and saved albums share the "collection" set. The server's page order is not

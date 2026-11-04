@@ -814,8 +814,12 @@ async fn to_request(
     Ok(Some((r.0, r.1, Vec::new())))
 }
 
+/// Context uri; the desktop sends "-" in autoplay, the original context is in reporting.uri.
 fn context_uri_of(ctx: &librespot_protocol::context::Context) -> Option<String> {
-    Some(ctx.uri().to_owned()).filter(|u| !u.is_empty() && u != "-")
+    let valid = |u: &String| u.starts_with("spotify:");
+    Some(ctx.uri().to_owned())
+        .filter(valid)
+        .or_else(|| ctx.metadata.get("reporting.uri").cloned().filter(valid))
 }
 
 /// Track ids of a context: inline pages when complete, else resolved by uri.
@@ -917,7 +921,7 @@ async fn load_from_play(
         .and_then(track_id)
         .or_else(|| {
             let uid = skip.track_uid.as_deref().filter(|u| !u.is_empty())?;
-            p.context.pages.iter().flat_map(|pg| pg.tracks.iter()).find(|t| t.uid() == uid).and_then(|t| track_id(t.uri()))
+            p.context.pages.iter().flat_map(|pg| pg.tracks.iter()).find(|t| t.uid() == uid).and_then(library::context_track_id)
         })
         .or_else(|| skip.track_index.and_then(|i| ids.get(i as usize).cloned()));
     let (tracks, start_index, stubs) = hydrate_with_start(session, ids, start_id).await?;
@@ -942,7 +946,7 @@ async fn load_from_transfer(
     let ctx = t.current_session.context.clone().unwrap_or_default();
     let playing_queue = t.queue.is_playing_queue();
     let current = if playing_queue { t.queue.tracks.first() } else { t.playback.current_track.as_ref() };
-    let start_id = current.and_then(|c| track_id(c.uri()));
+    let start_id = current.and_then(library::context_track_id);
     log::info!(
         "transfer: context {:?}, track {:?}, {} queued, paused {}",
         ctx.uri, start_id, t.queue.tracks.len(), t.playback.is_paused()
@@ -954,7 +958,7 @@ async fn load_from_transfer(
         .tracks
         .iter()
         .skip(usize::from(playing_queue))
-        .filter_map(|q| track_id(q.uri()))
+        .filter_map(library::context_track_id)
         .collect();
     let queued = if queued_ids.is_empty() {
         Vec::new()
@@ -963,7 +967,8 @@ async fn load_from_transfer(
     };
     let paused = t.playback.is_paused();
     let mut position = t.playback.position_as_of_timestamp().max(0) as u64;
-    if !paused && position > 0 && t.playback.timestamp() > 0 {
+    // timestamp: when the track was at position_as_of_timestamp (the desktop sends 0 + start time).
+    if !paused && t.playback.timestamp() > 0 {
         position += now_ms().saturating_sub(t.playback.timestamp() as u64);
     }
     let opts = t.options.as_ref();
