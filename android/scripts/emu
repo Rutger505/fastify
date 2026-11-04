@@ -31,6 +31,11 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.local/share/android/avd}"
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}"
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+# Agent shells (daemon, cron) lack these; without them systemctl --user fails and the
+# emulator looks "stopped" while it runs.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+[[ -S "$XDG_RUNTIME_DIR/bus" ]] || { echo "emu: no user bus at $XDG_RUNTIME_DIR/bus (loginctl enable-linger $USER)" >&2; exit 1; }
 
 AVD=Fastify_API35
 UNIT=fastify-emulator
