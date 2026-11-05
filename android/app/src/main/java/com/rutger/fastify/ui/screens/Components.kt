@@ -2,10 +2,11 @@ package com.rutger.fastify.ui.screens
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
-import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -245,13 +246,57 @@ private fun TrackRowContent(
 }
 
 @Composable
-fun CollectionRow(c: Collection, downloaded: Boolean = false, onClick: () -> Unit) {
+fun PlaylistArtwork(images: List<String?>, size: Dp, fallback: String?) {
+    if (images.isEmpty()) {
+        Artwork(fallback, size)
+        return
+    }
+    if (images.size == 1) {
+        Artwork(images.first() ?: fallback, size)
+        return
+    }
+    val shape = RoundedCornerShape(4.dp)
+    Box(Modifier.size(size).clip(shape).background(MaterialTheme.colorScheme.surfaceVariant)) {
+        images.take(4).forEachIndexed { index, url ->
+            if (url != null) {
+                val alignment = when (index) {
+                    0 -> Alignment.TopStart
+                    1 -> Alignment.TopEnd
+                    2 -> Alignment.BottomStart
+                    else -> Alignment.BottomEnd
+                }
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(0.5f).align(alignment).clip(RoundedCornerShape(2.dp)),
+                )
+            }
+        }
+        if (images.all { it == null }) {
+            Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(size / 2).align(Alignment.Center))
+        }
+    }
+}
+
+@Composable
+fun CollectionRow(
+    c: Collection,
+    downloaded: Boolean = false,
+    playlistArtwork: List<String?>? = null,
+    onClick: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Artwork(c.imageUrl, 56.dp, liked = c.kind == CollectionKind.LIKED)
+        if (c.kind == CollectionKind.PLAYLIST && playlistArtwork != null) {
+            PlaylistArtwork(playlistArtwork, 56.dp, c.imageUrl)
+        } else {
+            Artwork(c.imageUrl, 56.dp, liked = c.kind == CollectionKind.LIKED)
+        }
         Column(Modifier.weight(1f)) {
             Text(c.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
             if (c.subtitle.isNotEmpty() || downloaded) {

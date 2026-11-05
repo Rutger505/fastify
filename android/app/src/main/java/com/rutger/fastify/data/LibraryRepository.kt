@@ -56,6 +56,18 @@ class LibraryRepository(
 
     fun cachedTracks(c: Collection): List<Track>? = store.read(c.cacheKey, TRACKS)
 
+    fun cachedPlaylistArtwork(c: Collection): List<String?>? =
+        store.read(playlistArtworkKey(c), TRACKS)?.map { it.imageUrl }
+
+    /** First four album covers for playlist artwork. Loads only these tracks when no full snapshot exists. */
+    suspend fun playlistArtwork(c: Collection): List<String?> = withContext(Dispatchers.IO) {
+        val firstTracks = store.read(playlistArtworkKey(c), TRACKS)
+            ?: cachedTracks(c)?.take(4)
+            ?: timed("playlist cover ${c.id}") { core().playlistCoverTracks(c.id) }.map { it.toTrack() }
+        store.write(playlistArtworkKey(c), TRACKS, firstTracks)
+        firstTracks.map { it.imageUrl }
+    }
+
     fun tracks(c: Collection): Flow<Loadable<List<Track>>> = swr(c.cacheKey, TRACKS) { fetchTracks(c) }
 
     fun albumHeader(albumId: String): AlbumHeader? = store.read("albumheader_$albumId", AlbumHeader.serializer())
@@ -207,6 +219,7 @@ class LibraryRepository(
         private const val NEW_RELEASES = "new_releases"
         private const val NEW_RELEASE_DAYS = 60
         private val TRACKS = ListSerializer(Track.serializer())
+        private fun playlistArtworkKey(c: Collection) = "playlist_artwork_${c.id}"
         private val COLLECTIONS = ListSerializer(Collection.serializer())
     }
 }

@@ -20,7 +20,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -48,6 +52,19 @@ fun HomeScreen() {
     val pinned by c.downloads.collections.collectAsStateWithLifecycle()
     val pinnedKeys = pinned.map { it.cacheKey }.toSet()
     val home = state.data
+    var playlistArtwork by remember { mutableStateOf<Map<String, List<String?>>>(emptyMap()) }
+    LaunchedEffect(home?.playlists) {
+        val playlists = home?.playlists.orEmpty()
+        playlistArtwork = playlists.mapNotNull { playlist ->
+            c.library.cachedPlaylistArtwork(playlist)?.let { playlist.id to it }
+        }.toMap()
+        playlists.forEach { playlist ->
+            if (playlist.id !in playlistArtwork) {
+                runCatching { c.library.playlistArtwork(playlist) }
+                    .onSuccess { images -> playlistArtwork = playlistArtwork + (playlist.id to images) }
+            }
+        }
+    }
 
     PullToRefreshBox(
         isRefreshing = state.refreshing && home != null,
@@ -111,7 +128,13 @@ fun HomeScreen() {
 
             item { SectionHeader("Your library") }
             item { CollectionRow(Collection.Liked, downloaded = Collection.Liked.cacheKey in pinnedKeys) { nav.openCollection(Collection.Liked) } }
-            items(home.playlists, key = { "p" + it.id }) { CollectionRow(it, downloaded = it.cacheKey in pinnedKeys) { nav.openCollection(it) } }
+            items(home.playlists, key = { "p" + it.id }) { playlist ->
+                CollectionRow(
+                    playlist,
+                    downloaded = playlist.cacheKey in pinnedKeys,
+                    playlistArtwork = playlistArtwork[playlist.id] ?: emptyList(),
+                ) { nav.openCollection(playlist) }
+            }
             if (home.albums.isNotEmpty()) {
                 item { SectionHeader("Albums") }
                 items(home.albums, key = { "a" + it.id }) { CollectionRow(it, downloaded = it.cacheKey in pinnedKeys) { nav.openCollection(it) } }

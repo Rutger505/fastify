@@ -296,6 +296,15 @@ pub async fn playlist_tracks(session: &Session, id: &str) -> Result<Vec<TrackInf
     hydrate_tracks(session, &ids).await
 }
 
+/// Album artwork for a playlist's first four tracks, in playlist order.
+pub async fn playlist_cover_tracks(
+    session: &Session,
+    id: &str,
+) -> Result<Vec<TrackInfo>, CoreError> {
+    let ids = playlist_ids(session, id).await?;
+    hydrate_tracks(session, &ids.into_iter().take(4).collect::<Vec<_>>()).await
+}
+
 async fn playlist_ids(session: &Session, id: &str) -> Result<Vec<String>, CoreError> {
     let bytes = session.spclient().get_playlist(&parse_id(id)?).await?;
     let list = SelectedListContent::parse_from_bytes(&bytes).map_err(CoreError::other)?;

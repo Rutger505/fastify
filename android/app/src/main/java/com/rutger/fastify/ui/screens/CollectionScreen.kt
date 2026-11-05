@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -90,6 +91,14 @@ fun CollectionScreen(collection: Collection) {
     }
     val shownTracks = remember(shown) { shown.map { it.track } }
     val header = if (collection.kind == CollectionKind.ALBUM) remember(state.data) { c.library.albumHeader(collection.id) } else null
+    var playlistArtwork by remember(collection.cacheKey) { mutableStateOf(c.library.cachedPlaylistArtwork(collection)) }
+    LaunchedEffect(collection.cacheKey, tracks) {
+        if (collection.kind == CollectionKind.PLAYLIST && playlistArtwork == null) {
+            runCatching { c.library.playlistArtwork(collection) }
+                .onSuccess { playlistArtwork = it }
+        }
+    }
+    val coverImages = playlistArtwork ?: tracks.take(4).map { it.imageUrl }
 
     PullToRefreshBox(isRefreshing = state.refreshing && state.data != null, onRefresh = vm::refresh, modifier = Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
@@ -116,7 +125,11 @@ fun CollectionScreen(collection: Collection) {
             }
             item {
                 Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Artwork(collection.imageUrl, 200.dp, liked = collection.kind == CollectionKind.LIKED)
+                    if (collection.kind == CollectionKind.PLAYLIST) {
+                        PlaylistArtwork(coverImages, 200.dp, collection.imageUrl)
+                    } else {
+                        Artwork(collection.imageUrl, 200.dp, liked = collection.kind == CollectionKind.LIKED)
+                    }
                     Spacer(Modifier.height(16.dp))
                     Text(collection.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
