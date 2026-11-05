@@ -64,7 +64,7 @@ fun SearchScreen() {
     // Save the query once it led somewhere: keyboard search or tapping a result.
     val saveQuery = { c.searchHistory.record(query) }
 
-    // Focus the field on every Search tab tap, but not when coming back from a page opened here.
+    // Focus only after a double-tap on Search, not when returning from a page opened here.
     val focus = remember { FocusRequester() }
     var handledTick by rememberSaveable { mutableStateOf(-1) }
     LaunchedEffect(nav.searchFocusTick) {

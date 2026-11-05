@@ -87,7 +87,7 @@ class Navigator(private val nav: NavHostController) {
     fun openDiagnostics() = nav.navigate("diagnostics")
     fun back() = nav.popBackStack()
 
-    /** Bumped on every Search tab tap; SearchScreen focuses its field when it changes. */
+    /** Bumped on a Search tab double-tap; SearchScreen focuses its field when it changes. */
     var searchFocusTick by mutableIntStateOf(0)
         internal set
 
@@ -141,6 +141,7 @@ fun FastifyNavHost() {
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) shazam.start(stealth = true)
     }
+    var lastSearchTap by remember { mutableLongStateOf(0L) }
     var lastShazamTap by remember { mutableLongStateOf(0L) }
     LaunchedEffect(shazam) {
         shazam.stealthDone.collect { nav.switchTab("home"); shazam.stealthFinished() }
@@ -175,7 +176,16 @@ fun FastifyNavHost() {
                             )
                             NavigationBarItem(
                                 selected = currentTab == "search",
-                                onClick = { navigator.searchFocusTick++; nav.selectTab("search", currentTab) },
+                                onClick = {
+                                    val now = SystemClock.uptimeMillis()
+                                    if (now - lastSearchTap < DOUBLE_TAP_MS) {
+                                        lastSearchTap = 0L
+                                        navigator.searchFocusTick++
+                                    } else {
+                                        lastSearchTap = now
+                                    }
+                                    nav.selectTab("search", currentTab)
+                                },
                                 icon = { Icon(Icons.Default.Search, null) },
                                 label = { Text("Search") },
                             )
