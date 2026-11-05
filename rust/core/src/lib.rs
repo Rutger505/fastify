@@ -310,6 +310,15 @@ impl FastifyCore {
             .await
     }
 
+    /// The first four playlist tracks, used to build Spotify-style playlist artwork.
+    pub async fn playlist_cover_tracks(
+        self: Arc<Self>,
+        playlist_id: String,
+    ) -> Result<Vec<TrackInfo>, CoreError> {
+        self.with_session(|s| async move { library::playlist_cover_tracks(&s, &playlist_id).await })
+            .await
+    }
+
     pub async fn liked_tracks(self: Arc<Self>) -> Result<Vec<TrackInfo>, CoreError> {
         self.with_session(|s| async move { library::liked_tracks(&s).await })
             .await
