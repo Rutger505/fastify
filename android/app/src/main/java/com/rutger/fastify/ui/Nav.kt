@@ -63,6 +63,8 @@ import com.rutger.fastify.ui.screens.ShazamViewModel
 import com.rutger.fastify.ui.screens.StealthLoader
 import com.rutger.fastify.ui.screens.hasMic
 import com.rutger.fastify.ui.screens.HomeScreen
+import com.rutger.fastify.ui.screens.JamSheet
+import com.rutger.fastify.ui.screens.toast
 import com.rutger.fastify.ui.screens.LyricsScreen
 import com.rutger.fastify.ui.screens.MiniPlayer
 import com.rutger.fastify.ui.screens.NewReleasesScreen
@@ -150,6 +152,8 @@ fun FastifyNavHost() {
     val seenAt by c.shazamHistory.seenAt.collectAsStateWithLifecycle()
     val unseen = (shazamed.firstOrNull()?.at ?: 0L) > seenAt
     val playerState by player.state.collectAsStateWithLifecycle()
+    val jamSheet by c.jam.sheet.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { c.jam.notices.collect { ctx.toast(it) } }
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route.orEmpty()
     val showChrome = route !in fullScreen
@@ -248,6 +252,7 @@ fun FastifyNavHost() {
             }
         }
         if (stealth) StealthLoader(onCancel = shazam::stop)
+        if (jamSheet) JamSheet()
       }
     }
 }

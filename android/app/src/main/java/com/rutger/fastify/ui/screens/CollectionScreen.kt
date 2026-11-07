@@ -68,6 +68,7 @@ fun CollectionScreen(collection: Collection) {
     val vm = viewModel(key = collection.cacheKey) { CollectionViewModel(c.library, c.downloads, collection) }
     val state by vm.state.collectAsStateWithLifecycle()
     val playerState by c.player.state.collectAsStateWithLifecycle()
+    val shuffleOn by c.shuffle.on.collectAsStateWithLifecycle()
     val downloadedIds by c.downloads.trackIds.collectAsStateWithLifecycle()
     val pinned by c.downloads.collections.collectAsStateWithLifecycle()
     val progress by c.downloads.progress.collectAsStateWithLifecycle()
@@ -193,9 +194,9 @@ fun CollectionScreen(collection: Collection) {
                         )
                     }
                     Spacer(Modifier.weight(1f))
-                    // Same as the player's shuffle button: toggles shuffle mode; Play starts in that mode.
-                    IconButton(onClick = c.player::toggleShuffle) {
-                        Icon(Icons.Default.Shuffle, "Shuffle", tint = if (playerState.shuffle) Green else MaterialTheme.colorScheme.onSurface)
+                    // This context's shuffle mode (per playlist); Play starts in it.
+                    IconButton(onClick = { c.player.toggleShuffle(collection.contextUri(c.username.value)) }) {
+                        Icon(Icons.Default.Shuffle, "Shuffle", tint = if (c.player.shuffleOf(collection.contextUri(c.username.value), playerState, shuffleOn)) Green else MaterialTheme.colorScheme.onSurface)
                     }
                     Spacer(Modifier.width(4.dp))
                     FilledIconButton(

@@ -11,6 +11,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import com.rutger.fastify.core.RemoteCommand
 import com.rutger.fastify.data.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,16 +46,27 @@ data class PlayerUiState(
     val error: String? = null,
     /** Name of the Spotify Connect device being controlled, null = playing on this phone. */
     val remoteDevice: String? = null,
+    /** What the queue was started from (spotify:playlist:...), null = unknown/none. */
+    val contextUri: String? = null,
+    /** Device a transfer is moving playback to, until it's active there. */
+    val switchingTo: String? = null,
 )
 
 /**
  * UI-side handle to the playback service through a MediaController. Main thread only.
  * While [remote] controls another Spotify Connect device, [state] and the commands go there.
  */
-class PlayerConnection(private val context: Context, val remote: ConnectRemote) {
+class PlayerConnection(
+    private val context: Context,
+    val remote: ConnectRemote,
+    private val shuffles: ShuffleStore,
+    private val jam: () -> JamController,
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(PlayerUiState())
-    val state: StateFlow<PlayerUiState> = combine(_state, remote.ui) { local, r -> r ?: local }
+    val state: StateFlow<PlayerUiState> = combine(_state, remote.ui, remote.switching) { local, r, sw ->
+        (r ?: local).let { if (sw != null) it.copy(switchingTo = sw.name) else it }
+    }
         .stateIn(scope, SharingStarted.Eagerly, PlayerUiState())
 
     /** Local playback state, also while a remote device is controlled. */
@@ -69,7 +81,11 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
     fun connect() {
         if (future != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val f = MediaController.Builder(context, token).buildAsync()
+        val f = MediaController.Builder(context, token)
+            .setListener(object : MediaController.Listener {
+                override fun onExtrasChanged(controller: MediaController, extras: Bundle) = refresh(full = false)
+            })
+            .buildAsync()
         future = f
         f.addListener({
             val c = runCatching { f.get() }.getOrNull() ?: return@addListener
@@ -97,19 +113,26 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
         _state.value = _state.value.copy(connected = false)
     }
 
-    /** `contextUri`: what the tracks are (spotify:playlist:..., album, artist, collection), seeds autoplay. */
     /**
      * Play [tracks] from [startIndex] (-1 = from the top: a random track when shuffling).
-     * [shuffle] null keeps the current shuffle mode, like Spotify. Shuffle is switched off and
-     * back on around the swap so the service reshuffles with the start track first.
+     * `contextUri`: what the tracks are (spotify:playlist:..., album, artist, collection), seeds autoplay.
+     * [shuffle] null: the context's own shuffle mode ([ShuffleStore]); no context keeps the
+     * current mode. Shuffle is switched off and back on around the swap so the service
+     * reshuffles with the start track first.
      */
     fun play(tracks: List<Track>, startIndex: Int = -1, shuffle: Boolean? = null, contextUri: String? = null) {
-        if (remoteOn && tracks.isNotEmpty()) {
-            val sh = shuffle ?: state.value.shuffle
-            val start = if (startIndex >= 0) startIndex.coerceAtMost(tracks.lastIndex) else if (sh) tracks.indices.random() else 0
-            return remote.play(tracks, start, shuffle, contextUri)
+        val sh = shuffle ?: contextUri?.let(shuffles::get)
+        // Jam guest listening here: the Jam plays it (on every device), then relays it back.
+        if (!remoteOn && tracks.isNotEmpty() && jam().guestSessionId != null) {
+            val start = if (startIndex >= 0) startIndex.coerceAtMost(tracks.lastIndex) else 0
+            if (jam().redirect(RemoteCommand.Play(contextUri, tracks.map { it.id }, start.toUInt(), 0UL, sh))) return
         }
-        playLocal(tracks, startIndex, shuffle, contextUri)
+        if (remoteOn && tracks.isNotEmpty()) {
+            val on = sh ?: state.value.shuffle
+            val start = if (startIndex >= 0) startIndex.coerceAtMost(tracks.lastIndex) else if (on) tracks.indices.random() else 0
+            return remote.play(tracks, start, sh, contextUri)
+        }
+        playLocal(tracks, startIndex, sh, contextUri)
     }
 
     private fun playLocal(tracks: List<Track>, startIndex: Int, shuffle: Boolean?, contextUri: String?) = withController {
@@ -136,7 +159,26 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
     fun previousTrack() = if (remoteOn) remote.previous() else withController { seekToPreviousMediaItem() }
     fun seekTo(ms: Long) = if (remoteOn) remote.seekTo(ms) else withController { seekTo(ms) }
     fun playQueueIndex(index: Int) = if (remoteOn) remote.playQueueIndex(index) else withController { seekTo(index, 0); play() }
-    fun toggleShuffle() = if (remoteOn) remote.toggleShuffle() else withController { shuffleModeEnabled = !shuffleModeEnabled }
+    /** The player's shuffle button: the loaded queue (the service remembers it for its context). */
+    fun toggleShuffle() {
+        if (!remoteOn) return withController { shuffleModeEnabled = !shuffleModeEnabled }
+        val s = state.value
+        s.contextUri?.let { shuffles.set(it, !s.shuffle) }
+        remote.toggleShuffle()
+    }
+
+    /** Shuffle mode of [contextUri]: live when it's what's loaded, else what it'll start in. */
+    fun shuffleOf(contextUri: String?, s: PlayerUiState, stored: Set<String>): Boolean =
+        if (contextUri == null || isLoaded(contextUri, s)) s.shuffle else contextUri in stored
+
+    /** Shuffle button on a playlist/album/artist page: only that context, not what's playing elsewhere. */
+    fun toggleShuffle(contextUri: String?) {
+        val s = state.value
+        if (contextUri == null || isLoaded(contextUri, s)) toggleShuffle()
+        else shuffles.set(contextUri, !shuffles.get(contextUri))
+    }
+
+    private fun isLoaded(contextUri: String, s: PlayerUiState) = s.current != null && s.contextUri == contextUri
     fun cycleRepeat() = if (remoteOn) remote.cycleRepeat() else withController {
         repeatMode = when (repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
@@ -179,7 +221,9 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
 
     // "Add to queue" items play after the current track and earlier queued ones, before the rest
     // of the playlist (like Spotify). In shuffle mode the service keeps them in that spot.
-    fun addToQueue(track: Track) = if (remoteOn) remote.addToQueue(track) else withController {
+    fun addToQueue(track: Track) = if (remoteOn) remote.addToQueue(track)
+    else if (jam().redirect(RemoteCommand.AddToQueue(track.id))) Unit
+    else withController {
         if (mediaItemCount == 0) {
             setMediaItem(track.toMediaItem())
             prepare()
@@ -228,6 +272,7 @@ class PlayerConnection(private val context: Context, val remote: ConnectRemote) 
             autoplayFrom = autoplayFrom,
             queued = if (full) (0 until c.mediaItemCount).filter { c.getMediaItemAt(it).isQueued }.toSet() else _state.value.queued,
             error = c.playerError?.let(::describe),
+            contextUri = c.sessionExtras.getString(ARG_CONTEXT_URI),
         )
         // E.g. another device took over and paused the phone: the remote may attach to it now.
         if (before.isPlaying != c.isPlaying || before.current?.id != _state.value.current?.id) remote.localChanged()

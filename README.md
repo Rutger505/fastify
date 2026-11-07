@@ -73,6 +73,31 @@ can move playback anywhere, both ways.
   active; `PROBE_NO_ACTIVATE=1` refuses loads so it never takes playback from a device in use). Test with two probe dirs (copy `credentials/`, own `keys/device_id`), not the PC:
   PC playback is Rutger's, don't start/stop it without asking.
 - Not reachable when the service is gone (app closed and not playing).
+- Device switch: `ConnectRemote.switching` is set on tap (picker spinner, "Switching to …" in the
+  player) and cleared once the cluster names the target, on failure, or after 8 s.
+- Shuffle is per context (`ShuffleStore`): playing a playlist/album/artist starts in the mode it
+  was last left in; page shuffle buttons only change that context.
+
+## Jam
+
+Spotify Jam over private `social-connect` endpoints (`rust/core/src/jam.rs`, top comment lists
+them), UI in `JamSheet` (player bottom bar, Group icon), state in `JamController`.
+
+- A Jam is bound to our Connect device: every call sends `local_device_id` + the dealer
+  connection id, so the Connect hub is started first. POST/PUT without a body gets 411: send `{}`.
+- Host (Premium): `current_or_new?activate=true&type=REMOTE`. Guests' skips/queue adds reach
+  `ConnectTarget` as normal Connect commands. Invite = url-dispenser spotify.link, QR in the sheet.
+- Guest: `POST v3/sessions/join`, "Listen on this phone" (`LISTEN_AND_CONTROL`, falls back to
+  `CONTROL` on 403) or "Play on the host's speaker" (`CONTROL`: `ConnectRemote` attaches to the
+  Jam's device). Listening here, Spotify transfers the Jam to us; our own skip/seek/play/queue add
+  must go to the Jam (`jam_command`, `PlayerConnection` + `JamAwarePlayer` for notification and
+  Bluetooth), else the phone drifts out of sync. Pause stays local.
+- Pushes: `hm://social-connect/v2/session_update` {reason, session} on the Connect dealer bump a
+  revision (`jam_watch`); the app re-reads the session.
+- Invites: open.spotify.com/socialsession links open Fastify (unverified domain: enable under App
+  info > Open by default), any Jam link can be shared to Fastify, or pasted in the sheet.
+- Probe: `fastify-probe <dir> jam get|start|preview|join|leave|watch`. Testing with Rutger's
+  account starts/ends a real Jam: ask first.
 
 ## UI rules
 

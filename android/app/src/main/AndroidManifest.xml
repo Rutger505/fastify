@@ -40,6 +40,20 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="fastify" android:host="auth" />
             </intent-filter>
+            <!-- Jam invites. Unverified domain: enable under App info > Open by default. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="open.spotify.com" android:pathPattern="/socialsession/.*" />
+                <data android:pathPattern="/.*/socialsession/.*" />
+            </intent-filter>
+            <!-- Share a Jam link (e.g. spotify.link from a chat) to Fastify to join. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
 
         <provider

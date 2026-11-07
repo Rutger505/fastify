@@ -19,7 +19,7 @@ use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use http::{HeaderMap, HeaderValue, Method, header};
 use librespot_core::dealer::manager::{Reply, RequestReply};
-use librespot_core::dealer::protocol::{Command, Message, PlayCommand, Request};
+use librespot_core::dealer::protocol::{Command, Message, PayloadValue, PlayCommand, Request};
 use librespot_core::{Session, version};
 use librespot_protocol::connect::{
     Capabilities, Cluster, ClusterUpdate, Device, DeviceInfo, MemberType, PutStateReason,
@@ -230,6 +230,8 @@ struct Shared {
     put_active: AtomicBool,
     /// PUT the current state again (cluster changed while we're active).
     kick: Notify,
+    /// Jam push revision + its reason (session_update), bumped per push.
+    jam_version: watch::Sender<(u64, String)>,
 }
 
 impl Shared {
@@ -332,6 +334,7 @@ impl Hub {
                 put_as_player: AtomicBool::new(false),
                 put_active: AtomicBool::new(false),
                 kick: Notify::new(),
+                jam_version: watch::channel((0, String::new())).0,
             }),
             task: Mutex::new(None),
         }
@@ -362,6 +365,13 @@ impl Hub {
             }
         });
         *task = Some((id, handle));
+    }
+
+    /// Jam push revision past after (or the current one after timeout) + the push's reason.
+    pub async fn wait_jam(&self, after: u64, timeout: Duration) -> (u64, String) {
+        let mut rx = self.sh.jam_version.subscribe();
+        let _ = tokio::time::timeout(timeout, rx.wait_for(|(version, _)| *version != after)).await;
+        rx.borrow().clone()
     }
 
     /// The remote state once its version is past after (or after timeout, whatever comes first).
@@ -446,6 +456,14 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
         "hm://connect-state/v1/connect/volume",
         Message::from_raw::<SetVolumeCommand>,
     )?;
+    // Any push means "read the Jam again"; the payload only adds the reason.
+    let mut jam_updates = dealer.listen_for("hm://social-connect/v2/session_update", |m: Message| {
+        Ok(match m.payload {
+            PayloadValue::Json(text) => serde_json::from_str::<Value>(&text).unwrap_or_default(),
+            PayloadValue::Raw(bytes) => serde_json::from_slice::<Value>(&bytes).unwrap_or_default(),
+            PayloadValue::Empty => Value::Null,
+        })
+    })?;
     // One handler per uri per dealer: a restarted task on the same session can't register it
     // again. Carry on without commands then; the next session gets a fresh dealer.
     let mut commands: BoxStream<'static, RequestReply> =
@@ -502,6 +520,15 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
                 None => return Err(CoreError::Network { msg: "dealer closed".into() }),
             },
             Some(rr) = commands.next() => { let _ = work_tx.send(rr); },
+            update = jam_updates.next() => match update {
+                Some(Ok(v)) => {
+                    let reason = crate::jam::push_reason(&v);
+                    log::info!("jam push {reason}");
+                    sh.jam_version.send_modify(|(version, r)| { *version = version.wrapping_add(1); *r = reason; });
+                }
+                Some(Err(e)) => log::warn!("Jam update: {e}"),
+                None => return Err(CoreError::Network { msg: "dealer closed".into() }),
+            },
             vol = volumes.next() => match vol {
                 Some(Ok(v)) if sh.local.borrow().is_some() => {
                     let volume = v.volume.clamp(0, 65535) as u32;
@@ -1049,7 +1076,7 @@ fn track_json(t: &RemoteTrack) -> Value {
     v
 }
 
-fn command_json(cmd: &RemoteCommand) -> Value {
+pub(crate) fn command_json(cmd: &RemoteCommand) -> Value {
     let mut c = match cmd {
         RemoteCommand::Pause => json!({ "endpoint": "pause" }),
         RemoteCommand::Resume => json!({ "endpoint": "resume" }),

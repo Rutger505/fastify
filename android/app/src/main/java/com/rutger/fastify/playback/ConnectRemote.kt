@@ -45,6 +45,16 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
     /** Player UI state for [target], null when controlling this phone. */
     val ui: StateFlow<PlayerUiState?> = _ui
 
+    /** Device switch in progress: set on tap, cleared once the target is active (or it fails). */
+    data class Switch(val to: String?, val name: String)
+
+    private val _switching = MutableStateFlow<Switch?>(null)
+    /** Transfer in progress, for instant feedback while the server and devices catch up. */
+    val switching: StateFlow<Switch?> = _switching
+    /** This phone's Connect device id, once known (a switch to the phone ends when it's active). */
+    @Volatile private var meId: String? = null
+    private var switchTimeout: Job? = null
+
     @Volatile private var error: String? = null
     private val meta = ConcurrentHashMap<String, Track>()
     private val hydrating = Mutex()
@@ -130,6 +140,10 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
     private fun decide() {
         val s = _state.value ?: return
         val active = s.activeDeviceId
+        _switching.value?.let { sw ->
+            val done = if (sw.to != null) active == sw.to else (active != null && active == meId) || local().isPlaying
+            if (done) endSwitch()
+        }
         expect?.let { (device, until) ->
             if (active == device || System.currentTimeMillis() > until) expect = null else return
         }
@@ -200,6 +214,7 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
             queued = all.indices.filter { all[it].provider == "queue" }.toSet(),
             error = error ?: s.error,
             remoteDevice = name,
+            contextUri = s.contextUri,
         )
     }
 
@@ -294,22 +309,44 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
      * core PUTs the current state first. The receiving phone loads it in [ConnectTarget].
      */
     fun transfer(from: String?, to: String?) {
+        // Synchronously: the UI shows the switch before the (slow) POST and cluster update.
+        val name = to?.let { id -> _state.value?.devices?.find { it.id == id }?.name ?: "another device" } ?: "this phone"
+        _switching.value = Switch(to, name)
+        val started = System.currentTimeMillis()
         scope.launch {
+            switchTimeout?.cancel()
+            switchTimeout = scope.launch {
+                delay(TRANSFER_SETTLE_MS)
+                if (_switching.value?.to == to) {
+                    AppLog.w(TAG, "transfer to $name: not active after ${TRANSFER_SETTLE_MS} ms")
+                    endSwitch()
+                }
+            }
             runCatching {
-                val me = core().connectDeviceId()
+                val me = core().connectDeviceId().also { meId = it }
                 core().connectTransfer(from ?: me, to ?: me)
             }
                 .onSuccess {
+                    AppLog.i(TAG, "transfer -> $name accepted in ${System.currentTimeMillis() - started} ms")
                     error = null
                     expect = to to System.currentTimeMillis() + TRANSFER_SETTLE_MS
                     if (to != null) attach(to) else detach(dismiss = false)
+                    decide()
                 }
                 .onFailure { e ->
                     AppLog.w(TAG, "transfer ${from ?: "phone"} -> ${to ?: "phone"} failed", e)
+                    endSwitch()
                     error = "Connect transfer: ${e.message}"
                     render()
                 }
         }
+    }
+
+    private fun endSwitch() {
+        val sw = _switching.value ?: return
+        AppLog.i(TAG, "switch to ${sw.name} done")
+        switchTimeout?.cancel()
+        _switching.value = null
     }
 
     companion object {

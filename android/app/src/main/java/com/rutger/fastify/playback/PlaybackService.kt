@@ -69,7 +69,7 @@ class PlaybackService : MediaSessionService() {
         player.setShuffleOrder(AppendingShuffleOrder(0))
         player.addListener(PlayerEvents())
 
-        session = MediaSession.Builder(this, player)
+        session = MediaSession.Builder(this, JamAwarePlayer(player, c.jam))
             .setCallback(SessionCallback())
             .setSessionActivity(
                 PendingIntent.getActivity(
@@ -80,6 +80,7 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         restoreQueue()
+        c.jam.startWatching()
         connect = ConnectTarget(this, player, { c.core }, ::playOrder, { contextUri }, ::setContext)
             .also { it.start() }
     }
@@ -107,7 +108,7 @@ class PlaybackService : MediaSessionService() {
     /** Last queue comes back paused and prepared: cached tracks are ready before you tap play. */
     private fun restoreQueue() {
         val saved = container.queueStore.load() ?: return
-        contextUri = saved.contextUri
+        setContext(saved.contextUri)
         val autoplay = saved.autoplay.toSet()
         val queued = saved.queued.toSet()
         player.setMediaItems(
@@ -235,6 +236,8 @@ class PlaybackService : MediaSessionService() {
         contextUri = uri
         autoplayJob?.cancel()
         autoplayExhausted = null
+        // Controllers read it from here, e.g. to show a playlist's shuffle state.
+        session?.sessionExtras = Bundle().apply { uri?.let { putString(ARG_CONTEXT_URI, it) } }
     }
 
     private inner class PlayerEvents : Player.Listener {
@@ -269,6 +272,8 @@ class PlaybackService : MediaSessionService() {
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
             // Every press reshuffles what's left; current track stays put.
             if (shuffleModeEnabled) arrangeShuffle(reshuffle = true)
+            // Shuffle is per context: remembered for the next time it's played.
+            contextUri?.let { container.shuffle.set(it, shuffleModeEnabled) }
             saveQueue()
             maybeAutoplay()
         }

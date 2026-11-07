@@ -8,6 +8,7 @@ mod connect;
 mod edit;
 mod error;
 mod keystore;
+mod jam;
 mod library;
 mod pathfinder;
 mod shazam;
@@ -33,6 +34,14 @@ pub use connect::{
     RemoteTrack,
 };
 pub use error::CoreError;
+pub use jam::{JamInfo, JamMember, JamPreview};
+
+/// A Jam push: read the Jam again. reason: Spotify's (YOU_WERE_KICKED, SESSION_DELETED, ...).
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct JamEvent {
+    pub version: u64,
+    pub reason: String,
+}
 use keystore::{KeyEntry, KeyStore};
 pub use library::{AlbumInfo, ArtistRef, PlaylistInfo, TrackInfo};
 pub use stream::TrackStream;
@@ -208,6 +217,61 @@ impl FastifyCore {
             })
             .await
             .map_err(CoreError::other)?
+    }
+
+    /// The Jam this account is in, if any. Jam calls register the Connect device first: a Jam
+    /// is bound to it.
+    pub async fn jam_get(self: Arc<Self>) -> Result<Option<JamInfo>, CoreError> {
+        self.with_jam(|s| async move { jam::get(&s).await }).await
+    }
+
+    /// Long-poll Jam pushes (same dealer as Connect): returns once the revision is past
+    /// `after_version` or after ~25 s. Read the Jam again when the version changed.
+    pub async fn jam_watch(self: Arc<Self>, after_version: u64) -> Result<JamEvent, CoreError> {
+        let this = self.clone();
+        self.rt
+            .spawn(async move {
+                let session = this.session().await?;
+                this.connect.ensure(&session);
+                let (version, reason) = this.connect.wait_jam(after_version, Duration::from_secs(25)).await;
+                Ok(JamEvent { version, reason })
+            })
+            .await
+            .map_err(CoreError::other)?
+    }
+
+    /// Host a Jam on this Connect device (Premium only).
+    pub async fn jam_start(self: Arc<Self>) -> Result<JamInfo, CoreError> {
+        self.with_jam(|s| async move { jam::start(&s).await }).await
+    }
+
+    /// Who's in a Jam before joining. invite: open.spotify.com link, spotify:socialsession:, token.
+    pub async fn jam_preview(self: Arc<Self>, invite: String) -> Result<JamPreview, CoreError> {
+        self.with_jam(move |s| async move { jam::preview(&s, &invite).await }).await
+    }
+
+    /// Join: listen_here plays the Jam on this phone (falls back to controlling the host's
+    /// speaker when Spotify refuses), else control the host's speaker.
+    pub async fn jam_join(self: Arc<Self>, invite: String, listen_here: bool) -> Result<JamInfo, CoreError> {
+        self.with_jam(move |s| async move { jam::join(&s, &invite, listen_here).await }).await
+    }
+
+    /// Leave as a guest or end the Jam as its host. Refuses to touch a different session.
+    pub async fn jam_leave(self: Arc<Self>, session_id: String) -> Result<(), CoreError> {
+        self.with_jam(move |s| async move { jam::leave(&s, &session_id).await }).await
+    }
+
+    pub async fn jam_set_queue_only(self: Arc<Self>, session_id: String, queue_only: bool) -> Result<(), CoreError> {
+        self.with_jam(move |s| async move { jam::set_queue_only(&s, &session_id, queue_only).await }).await
+    }
+
+    pub async fn jam_kick(self: Arc<Self>, session_id: String, member_id: String) -> Result<(), CoreError> {
+        self.with_jam(move |s| async move { jam::kick(&s, &session_id, &member_id).await }).await
+    }
+
+    /// Guest listening here: a skip/seek/queue/play goes to the Jam, which relays it back.
+    pub async fn jam_command(self: Arc<Self>, session_id: String, command: RemoteCommand) -> Result<(), CoreError> {
+        self.with_jam(move |s| async move { jam::command(&s, &session_id, &command).await }).await
     }
 
     /// Spotify Connect: the account's devices and what the active one plays. Starts the observer
@@ -578,6 +642,24 @@ impl FastifyCore {
 
 impl FastifyCore {
     /// Run `f` with a live session on the core runtime (UniFFI futures run on a foreign executor).
+    /// with_session + the Connect device registered (Jam calls name it and its connection).
+    async fn with_jam<T, F, Fut>(self: Arc<Self>, f: F) -> Result<T, CoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Session) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, CoreError>> + Send + 'static,
+    {
+        let this = self.clone();
+        self.rt
+            .spawn(async move {
+                let session = this.session().await?;
+                this.connect.ensure(&session);
+                f(session).await
+            })
+            .await
+            .map_err(CoreError::other)?
+    }
+
     async fn with_session<T, F, Fut>(self: Arc<Self>, f: F) -> Result<T, CoreError>
     where
         T: Send + 'static,

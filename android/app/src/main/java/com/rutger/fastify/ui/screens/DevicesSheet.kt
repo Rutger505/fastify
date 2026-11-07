@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.filled.DevicesOther
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -42,9 +44,13 @@ fun DevicesSheet(onDismiss: () -> Unit) {
     val c = LocalContext.current.container
     val remote by c.remote.state.collectAsStateWithLifecycle()
     val target by c.remote.target.collectAsStateWithLifecycle()
+    val switching by c.remote.switching.collectAsStateWithLifecycle()
+    // While switching, the destination is the selected one (with a spinner), not the old device.
+    val selectedId = switching?.let { it.to ?: PHONE } ?: target ?: PHONE
     FastifySheet(onDismiss = onDismiss) {
         SheetTitle("Connect to a device")
-        DeviceRow(Icons.Default.Smartphone, "This phone", null, selected = target == null) {
+        DeviceRow(Icons.Default.Smartphone, "This phone", null, selected = selectedId == PHONE,
+            busy = switching.let { it != null && it.to == null }) {
             c.player.transferHere()
             onDismiss()
         }
@@ -61,7 +67,7 @@ fun DevicesSheet(onDismiss: () -> Unit) {
                 active -> "Paused"
                 else -> null
             }
-            DeviceRow(kindIcon(d.kind), d.name, status, selected = target == d.id) {
+            DeviceRow(kindIcon(d.kind), d.name, status, selected = selectedId == d.id, busy = switching?.to == d.id) {
                 c.player.transferTo(d.id)
                 onDismiss()
             }
@@ -72,7 +78,7 @@ fun DevicesSheet(onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun DeviceRow(icon: ImageVector, name: String, status: String?, selected: Boolean, onClick: () -> Unit) {
+private fun DeviceRow(icon: ImageVector, name: String, status: String?, selected: Boolean, busy: Boolean, onClick: () -> Unit) {
     val tint = if (selected) Green else MaterialTheme.colorScheme.onSurface
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 12.dp),
@@ -80,10 +86,13 @@ private fun DeviceRow(icon: ImageVector, name: String, status: String?, selected
     ) {
         Icon(icon, null, tint = tint)
         Spacer(Modifier.width(16.dp))
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(name, color = tint, fontWeight = if (selected) FontWeight.SemiBold else null)
-            status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            (if (busy) "Switching…" else status)?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
+        if (busy) CircularProgressIndicator(Modifier.size(18.dp), color = Green, strokeWidth = 2.dp)
     }
 }
 
@@ -111,6 +120,9 @@ private fun Hint(text: String, error: Boolean = false) {
         modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
     )
 }
+
+/** [selectedId] for this phone (device ids are hex, never this). */
+private const val PHONE = "phone"
 
 private fun kindIcon(kind: String): ImageVector = when (kind) {
     "computer" -> Icons.Default.Computer

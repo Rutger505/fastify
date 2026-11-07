@@ -11,9 +11,11 @@ import com.rutger.fastify.data.PlayHistory
 import com.rutger.fastify.data.SearchHistory
 import com.rutger.fastify.data.ShazamHistory
 import com.rutger.fastify.playback.ConnectRemote
+import com.rutger.fastify.playback.JamController
 import com.rutger.fastify.playback.PlayerConnection
 import com.rutger.fastify.playback.Prefetcher
 import com.rutger.fastify.playback.QueueStore
+import com.rutger.fastify.playback.ShuffleStore
 import com.rutger.fastify.playback.StreamPool
 import com.rutger.fastify.update.Updater
 import java.io.File
@@ -50,10 +52,12 @@ class AppContainer(val app: Application) {
     val snapshots by lazy { SnapshotStore(File(app.filesDir, "snapshots")) }
     val library by lazy { LibraryRepository({ core }, snapshots, history) }
     val queueStore by lazy { QueueStore(File(app.filesDir, "queue.json")) }
+    val shuffle by lazy { ShuffleStore(app.getSharedPreferences("shuffle", android.content.Context.MODE_PRIVATE)) }
     val streams by lazy { StreamPool { core } }
     val prefetcher by lazy { Prefetcher(scope) { core } }
     val remote: ConnectRemote by lazy { ConnectRemote({ core }, { player.localState.value }) }
-    val player: PlayerConnection by lazy { PlayerConnection(app, remote) }
+    val player: PlayerConnection by lazy { PlayerConnection(app, remote, shuffle) { jam } }
+    val jam: JamController by lazy { JamController(scope, { core }, { http }) }
     val downloads by lazy { Downloads(app, scope, { core }, library) }
 
     /** MainActivity is started (visible). */

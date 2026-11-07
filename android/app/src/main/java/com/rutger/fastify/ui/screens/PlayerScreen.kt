@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
@@ -46,15 +47,18 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -109,7 +113,11 @@ fun MiniPlayer(state: PlayerUiState, player: PlayerConnection, onOpen: () -> Uni
                 Icon(if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.isPlaying) "Pause" else "Play")
             }
         }
-        state.remoteDevice?.let { RemoteLabel(it, Modifier.padding(start = 62.dp, bottom = 4.dp)) }
+        val labelPad = Modifier.padding(start = 62.dp, bottom = 4.dp)
+        when {
+            state.switchingTo != null -> SwitchingLabel(state.switchingTo, labelPad)
+            state.remoteDevice != null -> RemoteLabel(state.remoteDevice, labelPad)
+        }
         LinearProgressIndicator(
             progress = { if (state.durationMs > 0) state.positionMs.toFloat() / state.durationMs else 0f },
             modifier = Modifier.fillMaxWidth().height(2.dp),
@@ -128,6 +136,16 @@ fun RemoteLabel(device: String, modifier: Modifier = Modifier) {
         Icon(Icons.Default.Devices, null, tint = Green, modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(6.dp))
         Text("Playing on $device", color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Instant feedback for a device switch; the transfer itself takes a few seconds. */
+@Composable
+fun SwitchingLabel(device: String, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(Modifier.size(12.dp), color = Green, strokeWidth = 1.5.dp)
+        Spacer(Modifier.width(8.dp))
+        Text("Switching to $device…", color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -225,6 +243,8 @@ fun PlayerScreen(onClose: () -> Unit) {
     val player = c.player
     val nav = LocalNavigator.current
     val state by player.state.collectAsStateWithLifecycle()
+    val jam = c.jam
+    val jamState by jam.state.collectAsStateWithLifecycle()
     val likedIds by c.library.likedIds.collectAsStateWithLifecycle()
     var showQueue by remember { mutableStateOf(false) }
     var showArtists by remember { mutableStateOf(false) }
@@ -360,13 +380,22 @@ fun PlayerScreen(onClose: () -> Unit) {
         // Bottom bar: lyrics left, queue right (Spotify puts the queue button down here too).
         Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { if (track != null) nav.openLyrics() }) { Icon(Icons.Default.Lyrics, "Lyrics") }
+            val inJam = jamState.jam != null
+            IconButton(onClick = jam::openSheet) { Icon(Icons.Default.Group, "Jam", tint = if (inJam) Green else LocalContentColor.current) }
             Spacer(Modifier.weight(1f))
             Row(Modifier.clickable { showDevices = true }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                val switching = state.switchingTo
                 val remote = state.remoteDevice
-                Icon(Icons.Default.Devices, "Devices", tint = if (remote != null) Green else MaterialTheme.colorScheme.onSurface)
-                if (remote != null) {
+                if (switching != null) {
+                    CircularProgressIndicator(Modifier.size(20.dp), color = Green, strokeWidth = 2.dp)
                     Spacer(Modifier.width(6.dp))
-                    Text(remote, color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Switching to $switching…", color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                } else {
+                    Icon(Icons.Default.Devices, "Devices", tint = if (remote != null) Green else MaterialTheme.colorScheme.onSurface)
+                    if (remote != null) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(remote, color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
             Spacer(Modifier.weight(1f))
@@ -382,10 +411,20 @@ fun PlayerScreen(onClose: () -> Unit) {
             // (swipe-remove crashed with IndexOutOfBounds when they read `state` directly).
             val queue = state.queue
             val order = state.order.takeIf { it.size == queue.size } ?: queue.indices.toList()
-            LaunchedEffect(Unit) { listState.scrollToItem(order.indexOf(state.index).coerceAtLeast(0)) }
+            // Played tracks only on request: the sheet opens at the current track.
+            var showHistory by remember { mutableStateOf(false) }
+            val played = order.indexOf(state.index).coerceAtLeast(0)
+            val visible = if (showHistory) order else order.drop(played)
+            // Expanding keeps the current track in view with the latest played tracks just above it.
+            LaunchedEffect(showHistory) { if (showHistory) listState.scrollToItem((played - 2).coerceAtLeast(0)) }
             SheetTitle("Queue")
             LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
-                items(order, key = { i -> "$i-${queue[i].id}" }) { i ->
+                if (played > 0) item(key = "history") {
+                    TextButton(onClick = { showHistory = !showHistory }, modifier = Modifier.padding(start = 8.dp)) {
+                        Text(if (showHistory) "Hide history" else "Show history ($played)")
+                    }
+                }
+                items(visible, key = { i -> "$i-${queue[i].id}" }) { i ->
                     val t = queue[i]
                     // Sections after the current track: hand-queued, then the playlist, then recommendations.
                     val pos = order.indexOf(i)

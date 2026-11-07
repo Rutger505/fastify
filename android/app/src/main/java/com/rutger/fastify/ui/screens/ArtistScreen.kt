@@ -67,6 +67,7 @@ fun ArtistScreen(artistId: String) {
     val vm = viewModel(key = "artist_$artistId") { ArtistViewModel(c.library, artistId) }
     val state by vm.state.collectAsStateWithLifecycle()
     val playerState by c.player.state.collectAsStateWithLifecycle()
+    val shuffleOn by c.shuffle.on.collectAsStateWithLifecycle()
     val downloaded by c.downloads.trackIds.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf<TrackMenu?>(null) }
     var popularShown by remember { mutableIntStateOf(POPULAR_STEP) }
@@ -113,8 +114,8 @@ fun ArtistScreen(artistId: String) {
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = c.player::toggleShuffle) {
-                        Icon(Icons.Default.Shuffle, "Shuffle", tint = if (playerState.shuffle) Green else MaterialTheme.colorScheme.onSurface)
+                    IconButton(onClick = { c.player.toggleShuffle("spotify:artist:$artistId") }) {
+                        Icon(Icons.Default.Shuffle, "Shuffle", tint = if (c.player.shuffleOf("spotify:artist:$artistId", playerState, shuffleOn)) Green else MaterialTheme.colorScheme.onSurface)
                     }
                     FilledIconButton(onClick = { if (top.isNotEmpty()) c.player.play(top, contextUri = "spotify:artist:$artistId") }, modifier = Modifier.size(56.dp)) {
                         Icon(Icons.Default.PlayArrow, "Play", modifier = Modifier.size(32.dp))

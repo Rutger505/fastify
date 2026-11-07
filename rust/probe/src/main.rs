@@ -8,6 +8,8 @@
 //!   fastify-probe <data-dir> like|unlike <track> | download <track>
 //!   fastify-probe <data-dir> target <name> [secs] [track]  # act as a Connect player, print commands
 //!     (PROBE_NO_ACTIVATE=1: refuse loads/resumes, never becomes the active device)
+//!   fastify-probe <data-dir> jam get|start|preview <invite>|join <invite> [control]|leave <id>|queueonly <id> <bool>|watch [secs]
+//!     (start registers a paused Connect device first, like target)
 //!   fastify-probe <data-dir> shazam <file.s16>  # raw 16 kHz mono s16le, e.g. ffmpeg -i x.mp3 -ss 60 -t 12 -ac 1 -ar 16000 -f s16le x.s16
 //!
 //! The OAuth redirect goes to 127.0.0.1:8898 on this machine. When logging in from another
@@ -93,6 +95,7 @@ async fn main() {
             target(core, name, secs, args.get(5).cloned()).await
         }
         "run" => run(core).await,
+        "jam" => jam(core, &args[3..]).await,
         "raw" => {
             let path = args.get(3).expect("path");
             match core.clone().spclient_get(path.clone()).await {
@@ -377,4 +380,37 @@ async fn target(core: Arc<FastifyCore>, name: String, secs: u64, track: Option<S
     watcher.abort();
     core.connect_set_player(None);
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+}
+
+async fn jam(core: Arc<FastifyCore>, args: &[String]) {
+    let a = |i: usize| args.get(i).cloned().unwrap_or_default();
+    match a(0).as_str() {
+        "get" => println!("{:#?}", core.clone().jam_get().await),
+        "start" => {
+            core.connect_set_player(Some(fastify_core::LocalPlayer {
+                name: "Fastify probe".into(), track: None, is_playing: false, is_buffering: false,
+                position_ms: 0, position_at_ms: 0, duration_ms: 0, shuffle: false, repeat_context: false,
+                repeat_track: false, context_uri: None, prev_tracks: vec![], next_tracks: vec![], volume: 40000,
+            }));
+            println!("device id {}", core.connect_device_id());
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            println!("{:#?}", core.clone().jam_start().await);
+        }
+        "preview" => println!("{:#?}", core.clone().jam_preview(a(1)).await),
+        "join" => println!("{:#?}", core.clone().jam_join(a(1), a(2) != "control").await),
+        "leave" => println!("{:?}", core.clone().jam_leave(a(1)).await),
+        "queueonly" => println!("{:?}", core.clone().jam_set_queue_only(a(1), a(2) == "true").await),
+        "watch" => {
+            let end = Instant::now() + std::time::Duration::from_secs(a(1).parse().unwrap_or(60));
+            let mut v = 0;
+            while Instant::now() < end {
+                match core.clone().jam_watch(v).await {
+                    Ok(e) if e.version != v => { v = e.version; println!("update {v} {}: {:#?}", e.reason, core.clone().jam_get().await) }
+                    Ok(_) => {}
+                    Err(e) => { println!("ERR {e}"); break }
+                }
+            }
+        }
+        _ => eprintln!("jam get|start|preview <invite>|join <invite> [control]|leave <id>|queueonly <id> <bool>|watch [secs]"),
+    }
 }
