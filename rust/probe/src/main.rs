@@ -110,6 +110,7 @@ async fn main() {
                     println!("{} img={:?}", a.name, a.image_url);
                     println!("bio: {:?}", a.biography.map(|b| b.chars().take(120).collect::<String>()));
                     println!("top: {}", tracks(&a.top_tracks));
+                    println!("top ids: {}", a.top_tracks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>().join(" "));
                     for (name, list) in [("albums", &a.albums), ("singles", &a.singles), ("compilations", &a.compilations), ("appears_on", &a.appears_on)] {
                         println!("{name} ({}): {:?}", list.len(), list.iter().take(5).map(|x| format!("{} [{} {:?}]", x.name, x.album_type, x.year)).collect::<Vec<_>>());
                     }
