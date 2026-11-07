@@ -377,28 +377,29 @@ fun PlayerScreen(onClose: () -> Unit) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        // Bottom bar: lyrics left, queue right (Spotify puts the queue button down here too).
+        // Bottom bar: Jam + devices left, lyrics + queue right, nothing centered.
         Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { if (track != null) nav.openLyrics() }) { Icon(Icons.Default.Lyrics, "Lyrics") }
             val inJam = jamState.jam != null
             IconButton(onClick = jam::openSheet) { Icon(Icons.Default.Group, "Jam", tint = if (inJam) Green else LocalContentColor.current) }
-            Spacer(Modifier.weight(1f))
-            Row(Modifier.clickable { showDevices = true }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                val switching = state.switchingTo
-                val remote = state.remoteDevice
-                if (switching != null) {
-                    CircularProgressIndicator(Modifier.size(20.dp), color = Green, strokeWidth = 2.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Switching to $switching…", color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                } else {
-                    Icon(Icons.Default.Devices, "Devices", tint = if (remote != null) Green else MaterialTheme.colorScheme.onSurface)
-                    if (remote != null) {
+            // Box takes the free space; the clickable row inside only its content, ellipsized when long.
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                Row(Modifier.clickable { showDevices = true }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val switching = state.switchingTo
+                    val remote = state.remoteDevice
+                    if (switching != null) {
+                        CircularProgressIndicator(Modifier.size(20.dp), color = Green, strokeWidth = 2.dp)
                         Spacer(Modifier.width(6.dp))
-                        Text(remote, color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("Switching to $switching…", color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    } else {
+                        Icon(Icons.Default.Devices, "Devices", tint = if (remote != null) Green else MaterialTheme.colorScheme.onSurface)
+                        if (remote != null) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(remote, color = Green, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
             }
-            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { if (track != null) nav.openLyrics() }) { Icon(Icons.Default.Lyrics, "Lyrics") }
             IconButton(onClick = { showQueue = true }) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue") }
         }
     }

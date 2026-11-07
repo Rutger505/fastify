@@ -118,6 +118,9 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
         }
     }
 
+    /** Errors from outside the controller (QR scanner) shown in the sheet. */
+    fun showError(message: String) { _state.value = _state.value.copy(error = message) }
+
     fun join(invite: String, listenHere: Boolean) = run("join Jam") {
         core().jamJoin(resolveInvite(invite), listenHere)
     }

@@ -121,6 +121,8 @@ dependencies {
     implementation(libs.coil.network.okhttp)
     implementation(libs.okhttp)
     implementation(libs.zxing.core)
+    implementation(libs.play.services.code.scanner)
+    implementation(libs.play.services.base)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
