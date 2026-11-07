@@ -446,6 +446,12 @@ impl FastifyCore {
             .await
     }
 
+    /// Create an empty private playlist at the top of the library; returns its id.
+    pub async fn playlist_create(self: Arc<Self>, name: String) -> Result<String, CoreError> {
+        self.with_session(|s| async move { edit::playlist_create(&s, &name).await })
+            .await
+    }
+
     pub async fn playlist_add(
         self: Arc<Self>,
         playlist_id: String,

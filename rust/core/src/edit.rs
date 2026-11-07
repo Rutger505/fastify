@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use http::{HeaderMap, HeaderValue, Method, header};
 use librespot_core::Session;
 use librespot_protocol::playlist4_external::{
-    Add, ChangeInfo, Delta, Item, ListChanges, Op, Rem, SelectedListContent, op,
+    Add, ChangeInfo, CreateListReply, Delta, Item, ItemAttributes, ListAttributes,
+    ListAttributesPartialState, ListChanges, Op, Rem, SelectedListContent, UpdateListAttributes, op,
 };
 use protobuf::{EnumOrUnknown, Message, MessageField};
 
@@ -36,6 +37,16 @@ async fn send_changes(
     base_revision: Option<Vec<u8>>,
     ops: Vec<Op>,
 ) -> Result<(), CoreError> {
+    let path = format!("/playlist/v2/playlist/{playlist_id}/changes");
+    post_changes(session, &path, base_revision, ops).await
+}
+
+async fn post_changes(
+    session: &Session,
+    path: &str,
+    base_revision: Option<Vec<u8>>,
+    ops: Vec<Op>,
+) -> Result<(), CoreError> {
     let changes = ListChanges {
         base_revision: base_revision.clone(),
         deltas: vec![Delta {
@@ -51,12 +62,71 @@ async fn send_changes(
         want_resulting_revisions: Some(true),
         ..Default::default()
     };
-    let path = format!("/playlist/v2/playlist/{playlist_id}/changes");
     session
         .spclient()
-        .request_with_protobuf(&Method::POST, &path, None, &changes)
+        .request_with_protobuf(&Method::POST, path, None, &changes)
         .await?;
     Ok(())
+}
+
+/// Create an empty private playlist and put it at the top of the user's library (rootlist).
+/// Returns the base62 playlist id.
+pub async fn playlist_create(session: &Session, name: &str) -> Result<String, CoreError> {
+    let delta = Delta {
+        ops: vec![Op {
+            kind: Some(EnumOrUnknown::new(op::Kind::UPDATE_LIST_ATTRIBUTES)),
+            update_list_attributes: MessageField::some(UpdateListAttributes {
+                new_attributes: MessageField::some(ListAttributesPartialState {
+                    values: MessageField::some(ListAttributes {
+                        name: Some(name.to_owned()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        info: MessageField::some(ChangeInfo {
+            user: Some(session.username()),
+            timestamp: Some(now_secs() as i64 * 1000),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let bytes = session
+        .spclient()
+        .request_with_protobuf(&Method::POST, "/playlist/v2/playlist", None, &delta)
+        .await?;
+    let reply = CreateListReply::parse_from_bytes(&bytes).map_err(CoreError::other)?;
+    let uri = reply.uri().to_owned();
+    let id = uri
+        .strip_prefix("spotify:playlist:")
+        .ok_or_else(|| CoreError::other(format!("unexpected playlist uri {uri}")))?
+        .to_owned();
+
+    let rootlist = session.spclient().get_rootlist(0, Some(1)).await?;
+    let rootlist = SelectedListContent::parse_from_bytes(&rootlist).map_err(CoreError::other)?;
+    let op = Op {
+        kind: Some(EnumOrUnknown::new(op::Kind::ADD)),
+        add: MessageField::some(Add {
+            items: vec![Item {
+                uri: Some(uri),
+                attributes: MessageField::some(ItemAttributes {
+                    timestamp: Some(now_secs() as i64 * 1000),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            add_first: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let path = format!("/playlist/v2/user/{}/rootlist/changes", session.username());
+    post_changes(session, &path, rootlist.revision, vec![op]).await?;
+    log::info!("created playlist {id} ({name:?})");
+    Ok(id)
 }
 
 /// Append tracks to the end of a playlist.
