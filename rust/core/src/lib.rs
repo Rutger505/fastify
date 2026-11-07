@@ -452,6 +452,11 @@ impl FastifyCore {
             .await
     }
 
+    pub async fn playlist_rename(self: Arc<Self>, playlist_id: String, name: String) -> Result<(), CoreError> {
+        self.with_session(|s| async move { edit::playlist_rename(&s, &playlist_id, &name).await })
+            .await
+    }
+
     pub async fn playlist_add(
         self: Arc<Self>,
         playlist_id: String,

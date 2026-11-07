@@ -72,21 +72,8 @@ async fn post_changes(
 /// Create an empty private playlist and put it at the top of the user's library (rootlist).
 /// Returns the base62 playlist id.
 pub async fn playlist_create(session: &Session, name: &str) -> Result<String, CoreError> {
+    // Spotify ignores attributes in the create call itself, so the name is set afterwards.
     let delta = Delta {
-        ops: vec![Op {
-            kind: Some(EnumOrUnknown::new(op::Kind::UPDATE_LIST_ATTRIBUTES)),
-            update_list_attributes: MessageField::some(UpdateListAttributes {
-                new_attributes: MessageField::some(ListAttributesPartialState {
-                    values: MessageField::some(ListAttributes {
-                        name: Some(name.to_owned()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }],
         info: MessageField::some(ChangeInfo {
             user: Some(session.username()),
             timestamp: Some(now_secs() as i64 * 1000),
@@ -125,8 +112,28 @@ pub async fn playlist_create(session: &Session, name: &str) -> Result<String, Co
     };
     let path = format!("/playlist/v2/user/{}/rootlist/changes", session.username());
     post_changes(session, &path, rootlist.revision, vec![op]).await?;
+    playlist_rename(session, &id, name).await?;
     log::info!("created playlist {id} ({name:?})");
     Ok(id)
+}
+
+pub async fn playlist_rename(session: &Session, playlist_id: &str, name: &str) -> Result<(), CoreError> {
+    let list = fetch_list(session, playlist_id).await?;
+    let op = Op {
+        kind: Some(EnumOrUnknown::new(op::Kind::UPDATE_LIST_ATTRIBUTES)),
+        update_list_attributes: MessageField::some(UpdateListAttributes {
+            new_attributes: MessageField::some(ListAttributesPartialState {
+                values: MessageField::some(ListAttributes {
+                    name: Some(name.to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    send_changes(session, playlist_id, list.revision, vec![op]).await
 }
 
 /// Append tracks to the end of a playlist.
