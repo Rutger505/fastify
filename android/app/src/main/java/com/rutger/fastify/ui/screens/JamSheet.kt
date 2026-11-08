@@ -56,14 +56,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
-import com.google.android.gms.common.moduleinstall.ModuleInstall
-import com.google.android.gms.common.api.CommonStatusCodes
-import com.google.android.gms.common.moduleinstall.InstallStatusListener
-import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
-import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
@@ -114,11 +106,15 @@ private fun NoJam(busy: Boolean, jam: JamController) {
     Button(onClick = jam::start, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Start a Jam") }
     HorizontalDivider(Modifier.padding(vertical = 16.dp))
     Text("Join a Jam", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(bottom = 8.dp))
-    var downloading by remember { mutableStateOf(false) }
-    OutlinedButton(onClick = { scanInvite(context, jam) { downloading = it } }, enabled = !busy && !downloading, modifier = Modifier.fillMaxWidth()) {
-        if (downloading) {
-            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Downloading scanner…")
-        } else {
+    var scanning by remember { mutableStateOf(false) }
+    if (scanning) {
+        QrScanner(
+            onResult = { scanning = false; jam.openInvite(it) },
+            onError = { scanning = false; jam.showError(it) },
+        )
+        TextButton(onClick = { scanning = false }, modifier = Modifier.fillMaxWidth()) { Text("Cancel scan") }
+    } else {
+        OutlinedButton(onClick = { scanning = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.QrCodeScanner, null); Text(" Scan QR code")
         }
     }
@@ -135,44 +131,6 @@ private fun NoJam(busy: Boolean, jam: JamController) {
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
     )
     OutlinedButton(onClick = { jam.openInvite(link) }, enabled = !busy && link.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Open invite") }
-}
-
-/**
- * Google's code scanner (Play services): no camera permission, reads Spotify's and Fastify's invite QR codes.
- * Its UI is a Play services module; install it first (no-op when present), else startScan fails while it downloads.
- */
-private fun scanInvite(context: Context, jam: JamController, onDownloading: (Boolean) -> Unit) {
-    val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
-    val scanner = GmsBarcodeScanning.getClient(context, options)
-    val fail = { e: Exception -> onDownloading(false); jam.showError("QR scan: ${e.javaClass.simpleName}: ${e.message}") }
-    val scan = {
-        onDownloading(false)
-        scanner.startScan()
-            .addOnSuccessListener { code ->
-                val value = code.rawValue
-                if (value.isNullOrBlank()) jam.showError("QR scan: code has no text") else jam.openInvite(value)
-            }
-            .addOnFailureListener(fail)
-        // Cancelled scan: nothing to report.
-    }
-    val installer = ModuleInstall.getClient(context)
-    // installModules only accepts the request; the listener reports when the download is done.
-    val listener = object : InstallStatusListener {
-        override fun onInstallStatusUpdated(update: ModuleInstallStatusUpdate) {
-            when (update.installState) {
-                ModuleInstallStatusUpdate.InstallState.STATE_COMPLETED -> { installer.unregisterListener(this); scan() }
-                ModuleInstallStatusUpdate.InstallState.STATE_FAILED, ModuleInstallStatusUpdate.InstallState.STATE_CANCELED -> {
-                    installer.unregisterListener(this)
-                    val state = if (update.installState == ModuleInstallStatusUpdate.InstallState.STATE_FAILED) "failed" else "canceled"
-                    fail(IllegalStateException("scanner download $state, ${CommonStatusCodes.getStatusCodeString(update.errorCode)} (${update.errorCode})"))
-                }
-            }
-        }
-    }
-    onDownloading(true)
-    installer.installModules(ModuleInstallRequest.newBuilder().addApi(scanner).setListener(listener).build())
-        .addOnSuccessListener { if (it.areModulesAlreadyInstalled()) { installer.unregisterListener(listener); scan() } }
-        .addOnFailureListener { installer.unregisterListener(listener); fail(it) }
 }
 
 @Composable

@@ -13,7 +13,7 @@
 #                         EMU_GRADLE_ARGS="--profile" etc. are passed to Gradle (report in app/../build/reports/profile)
 #   emu start | stop      boot (and wait) / shut down our emulator only
 #   emu install           install the x86_64 debug APK
-#   emu launch            force-stop + start the app, then 'emu ui'
+#   emu launch [am start args]  force-stop + start the app, then 'emu ui'; args e.g. --ez open_jam true (debug: Jam sheet)
 #   emu ui                screenshot (/tmp/fastify-screen.png) + focus + visible texts
 #   emu logs [N]          last N (200) Fastify/fastify-core/AndroidRuntime lines since launch
 #   emu tap X Y           tap screen coordinates (720x1280)
@@ -280,7 +280,11 @@ launch() {
   local deadline xml texts prev= ready=
   adb shell am force-stop "$PKG"
   adb logcat -c
-  adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  if [ $# -gt 0 ]; then
+    adb shell am start -n "$PKG/.ui.MainActivity" "$@" >/dev/null
+  else
+    adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  fi
   deadline=$(( $(now) + ${LAUNCH_TIMEOUT:-60} ))
   until focus | grep -q "$PKG/"; do
     [ "$(now)" -lt "$deadline" ] || { ui; die "app is not in the foreground after launch (see focus above + 'emu logs')"; }
@@ -353,7 +357,7 @@ case "$cmd" in
   start) acquire "$WAIT"; start ;;
   stop) acquire 0; stop ;;
   install) acquire 0; install ;;
-  launch) acquire 0; launch ;;
+  launch) acquire 0; launch "$@" ;;
   ui) acquire 0; ui ;;
   logs) acquire 0; adb logcat -d | grep -E "Fastify/|fastify-core|AndroidRuntime" | tail -n "${1:-200}" || true ;;
   tap) acquire 0; tap "$@" ;;

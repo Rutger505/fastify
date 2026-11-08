@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rutger.fastify.BuildConfig
 import com.rutger.fastify.container
 import com.rutger.fastify.ui.screens.toast
 import com.rutger.fastify.ui.theme.FastifyTheme
@@ -53,6 +54,9 @@ class MainActivity : ComponentActivity() {
 
     /** Jam invite opened (open.spotify.com/socialsession/...) or shared as text. */
     private fun handleIntent(intent: Intent?) {
+        // Debug builds: `am start -n com.rutger.fastify/.ui.MainActivity --ez open_jam true` opens the Jam sheet
+        // without playing anything (the player's Jam button needs a track, which takes over Rutger's playback).
+        if (BuildConfig.DEBUG && intent?.getBooleanExtra("open_jam", false) == true) return container.jam.openSheet()
         val text = when (intent?.action) {
             Intent.ACTION_VIEW -> intent.dataString
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)

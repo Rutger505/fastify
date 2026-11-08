@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Jam invite QR scan only; asked on first scan. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Stealth recognize result (double-tap Herkennen tab). -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -55,11 +58,6 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
-
-        <!-- Play services downloads the QR scanner UI at install, not on the first Jam scan. -->
-        <meta-data
-            android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="barcode_ui" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
