@@ -31,7 +31,10 @@ android {
         minSdk = 35
         targetSdk = 37
         versionCode = commitCount.get()
-        versionName = "0.4.0+" + gitDescribe.get()
+        // Version is just v<commit count> (= versionCode); the hash only goes to Diagnostics. -dirty
+        // stays in the name so scripts/publish refuses uncommitted builds.
+        versionName = "v${commitCount.get()}" + (if (gitDescribe.get().endsWith("-dirty")) "-dirty" else "")
+        buildConfigField("String", "GIT_HASH", "\"${gitDescribe.get()}\"")
         ndk { abiFilters += (providers.environmentVariable("FASTIFY_ABIS").orNull ?: "arm64-v8a").split(" ") }
     }
 

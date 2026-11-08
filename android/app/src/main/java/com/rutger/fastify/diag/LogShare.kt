@@ -32,7 +32,7 @@ object LogShare {
     private fun collect(context: Context, extra: String?): File {
         val out = File(File(context.cacheDir, "shared").apply { mkdirs() }, "fastify-logs.txt")
         out.bufferedWriter().use { w ->
-            w.appendLine("Fastify ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            w.appendLine("Fastify ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_HASH})")
             w.appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
             w.appendLine("Collected: ${LocalDateTime.now()}")
             if (extra != null) {

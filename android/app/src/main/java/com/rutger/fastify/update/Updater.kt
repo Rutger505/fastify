@@ -128,7 +128,7 @@ class Updater(
             try {
                 val file = download(release)
                 val silent = canInstallSilently()
-                AppLog.i("Update", "${release.versionName} (${release.versionCode}) ready: ${file.name}, silent=$silent")
+                AppLog.i("Update", "v${release.versionCode} ready: ${file.name}, silent=$silent")
                 if (silent) commit(release, interactive = false) else {
                     _status.value = UpdateStatus.Ready(release)
                     if (!foreground.value) notifyNeedsTap(release, null)
@@ -155,16 +155,16 @@ class Updater(
 
     fun describe(): String {
         val info = runCatching { app.packageManager.getInstallSourceInfo(app.packageName) }.getOrNull()
-        val current = "installed ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+        val current = "installed ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_HASH})"
         val state = when (val s = _status.value) {
             UpdateStatus.Idle -> "not checked in this process"
             UpdateStatus.Checking -> "checking"
-            is UpdateStatus.UpToDate -> "up to date, latest ${s.latest.versionName} (${s.latest.versionCode})"
-            is UpdateStatus.Downloading -> "downloading ${s.release.versionCode}: ${s.bytes / 1_048_576}/${s.release.size / 1_048_576} MB"
-            is UpdateStatus.Ready -> "${s.release.versionName} (${s.release.versionCode}) downloaded, needs a tap"
-            is UpdateStatus.Scheduled -> "${s.release.versionName} (${s.release.versionCode}) scheduled, installs when Fastify is not in use"
-            is UpdateStatus.Installing -> "installing ${s.release.versionCode}"
-            is UpdateStatus.NeedsConfirmation -> "${s.release.versionCode} needs a tap to install"
+            is UpdateStatus.UpToDate -> "up to date, latest v${s.latest.versionCode}"
+            is UpdateStatus.Downloading -> "downloading v${s.release.versionCode}: ${s.bytes / 1_048_576}/${s.release.size / 1_048_576} MB"
+            is UpdateStatus.Ready -> "v${s.release.versionCode} downloaded, needs a tap"
+            is UpdateStatus.Scheduled -> "v${s.release.versionCode} scheduled, installs when Fastify is not in use"
+            is UpdateStatus.Installing -> "installing v${s.release.versionCode}"
+            is UpdateStatus.NeedsConfirmation -> "v${s.release.versionCode} needs a tap to install"
             is UpdateStatus.Failed -> "FAILED ${s.message}"
         }
         val sessions = installer.mySessions.joinToString { "#${it.sessionId} committed=${it.isCommitted} staged=${it.isStaged}" }
@@ -248,7 +248,7 @@ class Updater(
             _status.value = UpdateStatus.Failed("install: ${file.name} missing, re-check", r)
             return
         }
-        AppLog.i("Update", "committing ${r.versionName} (${r.versionCode}), interactive=$interactive")
+        AppLog.i("Update", "committing v${r.versionCode}, interactive=$interactive")
         try {
             installer.mySessions.forEach { runCatching { installer.abandonSession(it.sessionId) } }
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
@@ -297,7 +297,7 @@ class Updater(
             is UpdateStatus.Ready -> s.release
             else -> null
         }
-        val label = release?.versionName ?: "version $versionCode"
+        val label = release?.let { "v${it.versionCode}" } ?: "v$versionCode"
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 AppLog.w("Update", "$label: Android asks for confirmation (interactive=$interactive): $message")
@@ -323,7 +323,7 @@ class Updater(
     }
 
     /** Fallback when Android wants a tap: a notification, so it doesn't wait for Fastify to be opened. */
-    private fun notifyNeedsTap(release: Release?, confirm: Intent?, label: String = release?.versionName ?: "update") {
+    private fun notifyNeedsTap(release: Release?, confirm: Intent?, label: String = release?.let { "v${it.versionCode}" } ?: "update") {
         notifications.createNotificationChannel(NotificationChannel(CHANNEL, "App updates", NotificationManager.IMPORTANCE_DEFAULT))
         val target = confirm ?: app.packageManager.getLaunchIntentForPackage(app.packageName) ?: return
         val tap = PendingIntent.getActivity(app, 1, target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -341,7 +341,7 @@ class Updater(
         val prefs = app.getSharedPreferences("update", android.content.Context.MODE_PRIVATE)
         val previous = prefs.getInt("versionCode", -1)
         if (previous != BuildConfig.VERSION_CODE) {
-            AppLog.i("Update", "now running ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}), was $previous")
+            AppLog.i("Update", "now running ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_HASH}), was v$previous")
             prefs.edit().clear().putInt("versionCode", BuildConfig.VERSION_CODE).apply()
             notifications.cancel(NOTIFICATION_ID)
         }

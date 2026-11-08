@@ -138,7 +138,8 @@ The app updates itself from the CDN (`update/Updater.kt`), the way app stores do
 - Silent only when Fastify is the installer of record. The first update after a manual install needs
   a tap (Home card + notification), and so does every update Play Protect wants to check.
 
-- `versionCode` is the commit count (`git rev-list --count HEAD`), so every commit is newer.
+- `versionCode` is the commit count (`git rev-list --count HEAD`), so every commit is newer. The
+  version shown everywhere is `v<versionCode>`; the git hash only appears in Diagnostics and logs.
 - Publish: `scripts/publish` uploads `fastify-<versionCode>.apk`, `fastify.apk` and then `version.json`,
   and verifies each one. It refuses dirty builds and versionCodes that aren't newer.
 - Updates only install over the same signing key (`~/.local/share/android/debug.keystore` on the VM).
