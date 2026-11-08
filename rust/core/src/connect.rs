@@ -301,10 +301,28 @@ impl Shared {
                         _ => true,
                     } =>
             {
+                let other = &c.active_device_id;
+                let name = c.device.get(other).map_or("?", |d| d.name.as_str());
+                let state = c.player_state.as_ref();
+                let playing = state.is_some_and(|p| p.is_playing && !p.is_paused);
+                let we_play = self.local.borrow().as_ref().is_some_and(|l| l.is_playing);
+                // Only a device that actually plays takes over. Spotify's own app claims the
+                // active device without playing when Android wakes it (Bluetooth/car connect):
+                // keep playing and claim it back, else every connect pauses the phone.
+                if !playing && we_play {
+                    *a = Activity::Pending { since_ms: now_ms() };
+                    drop(a);
+                    log::info!(
+                        "connect: {other} ({name}) claimed active without playing (state: {}), claiming back",
+                        state.map_or("none".into(), |p| format!("playing {} paused {}", p.is_playing, p.is_paused)),
+                    );
+                    self.kick.notify_one();
+                    return;
+                }
                 *a = Activity::Inactive;
                 drop(a);
-                log::info!("connect: {} took playback over", c.active_device_id);
-                self.push(c.active_device_id.clone(), ConnectRequest::Deactivated, None);
+                log::info!("connect: {other} ({name}) took playback over (playing {playing})");
+                self.push(other.clone(), ConnectRequest::Deactivated, None);
                 self.kick.notify_one();
             }
             _ => {}
