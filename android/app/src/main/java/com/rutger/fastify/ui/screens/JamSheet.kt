@@ -114,12 +114,12 @@ private fun NoJam(busy: Boolean, jam: JamController) {
         )
         TextButton(onClick = { scanning = false }, modifier = Modifier.fillMaxWidth()) { Text("Cancel scan") }
     } else {
-        OutlinedButton(onClick = { scanning = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { scanning = true; typing = false }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.QrCodeScanner, null); Text(" Scan QR code")
         }
     }
     if (!typing) {
-        TextButton(onClick = { typing = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Enter link") }
+        TextButton(onClick = { typing = true; scanning = false }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Enter link") }
         return
     }
     OutlinedTextField(
