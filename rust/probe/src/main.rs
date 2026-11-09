@@ -96,6 +96,24 @@ async fn main() {
         }
         "run" => run(core).await,
         "jam" => jam(core, &args[3..]).await,
+        "meta" => {
+            // meta track|album <base62 id>: raw /metadata/4 protobuf as JSON (files, dates, label, restrictions).
+            use protobuf::Message;
+            let (kind, id) = (args[3].as_str(), args[4].as_str());
+            const B62: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            let n = id.chars().fold(0u128, |n, c| n * 62 + B62.find(c).expect("base62") as u128);
+            let bytes = core.clone().spclient_get(format!("/metadata/4/{kind}/{n:032x}")).await.expect("metadata");
+            let json = match kind {
+                "track" => protobuf_json_mapping::print_to_string(&librespot_protocol::metadata::Track::parse_from_bytes(&bytes).expect("parse")),
+                "album" => protobuf_json_mapping::print_to_string(&librespot_protocol::metadata::Album::parse_from_bytes(&bytes).expect("parse")),
+                other => panic!("unknown kind {other}"),
+            };
+            println!("{}", json.expect("json"));
+        }
+        "files" => match core.clone().debug_track_files(args[3].clone()).await {
+            Ok(lines) => for l in lines { println!("{l}") },
+            Err(e) => println!("ERR {e}"),
+        },
         "raw" => {
             let path = args.get(3).expect("path");
             match core.clone().spclient_get(path.clone()).await {

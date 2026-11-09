@@ -698,6 +698,9 @@ dependencies = [
  "env_logger",
  "fastify-core",
  "librespot-oauth",
+ "librespot-protocol",
+ "protobuf",
+ "protobuf-json-mapping",
  "tokio",
 ]
 

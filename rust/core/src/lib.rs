@@ -684,6 +684,30 @@ impl FastifyCore {
             .map_err(CoreError::other)?
     }
 
+    /// Probe only: every audio file of a track (all formats) with its audio key result.
+    pub async fn debug_track_files(self: Arc<Self>, track_id: String) -> Result<Vec<String>, CoreError> {
+        self.with_session(move |session| async move {
+            let id = SpotifyId::from_base62(&track_id).map_err(|_| CoreError::NotFound {
+                msg: format!("invalid track id {track_id}"),
+            })?;
+            let track = Track::get(&session, &SpotifyUri::Track { id }).await.map_err(CoreError::from)?;
+            let mut out = vec![format!(
+                "{} | album {:?} label {:?} date {:?} | alternatives {} | restrictions {:?}",
+                track.name, track.album.name, track.album.label, track.album.date,
+                track.alternatives.len(), track.restrictions
+            )];
+            for (format, file_id) in track.files.iter() {
+                let key = session.audio_key().request(id, *file_id).await;
+                out.push(format!("{format:?} {file_id}: key {}", match key {
+                    Ok(_) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }));
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     fn cache_credentials_path(&self) -> Option<PathBuf> {
         // Mirrors librespot's layout: <credentials dir>/credentials.json
         self.keys
