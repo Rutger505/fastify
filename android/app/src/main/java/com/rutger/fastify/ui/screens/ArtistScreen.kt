@@ -117,7 +117,7 @@ fun ArtistScreen(artistId: String) {
                     IconButton(onClick = { c.player.toggleShuffle("spotify:artist:$artistId") }) {
                         Icon(Icons.Default.Shuffle, "Shuffle", tint = if (c.player.shuffleOf("spotify:artist:$artistId", playerState, shuffleOn)) Green else MaterialTheme.colorScheme.onSurface)
                     }
-                    FilledIconButton(onClick = { if (top.isNotEmpty()) c.player.play(top, contextUri = "spotify:artist:$artistId") }, modifier = Modifier.size(56.dp)) {
+                    FilledIconButton(onClick = { if (top.isNotEmpty()) c.player.play(top, contextUri = "spotify:artist:$artistId", contextTitle = artist?.name) }, modifier = Modifier.size(56.dp)) {
                         Icon(Icons.Default.PlayArrow, "Play", modifier = Modifier.size(32.dp))
                     }
                 }
@@ -127,7 +127,7 @@ fun ArtistScreen(artistId: String) {
                 val shown = top.take(popularShown)
                 itemsIndexed(shown, key = { _, t -> "top" + t.id }) { i, t ->
                     TrackRow(
-                        t, playing = playerState.current?.id == t.id, onClick = { c.player.play(top, i, contextUri = "spotify:artist:$artistId") },
+                        t, playing = playerState.current?.id == t.id, onClick = { c.player.play(top, i, contextUri = "spotify:artist:$artistId", contextTitle = artist?.name) },
                         downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, number = i + 1,
                         trailing = artist.playcounts[t.id]?.let { streamsFormat.format(it) },
                         modifier = Modifier.animateItem(fast(), fast(), fast()),

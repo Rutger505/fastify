@@ -99,6 +99,15 @@ them), UI in `JamSheet` (player bottom bar, Group icon), state in `JamController
 - Probe: `fastify-probe <dir> jam get|start|preview|join|leave|watch`. Testing with Rutger's
   account starts/ends a real Jam: ask first.
 
+## Pathfinder (web GraphQL)
+
+`rust/core/src/pathfinder.rs`, only for what spclient lacks: artist play counts, album/playlist
+search (`searchDesktop`; context-resolve search is tracks only) and the Wrapped "Your Top Songs
+<year>" playlists (found by search: owner `spotify` + format `wrapped-<year>-...`; not in the
+rootlist unless saved). Persisted-query hashes are hardcoded and re-scraped from the web player
+(entry bundles, then lazy chunks) when rejected. Probe: `fastify-probe <dir> pf <op> '<vars json>'`,
+`search <q>`, `topsongs`.
+
 ## UI rules
 
 - Animations last at most 150 ms (`ANIM_MS` in `ui/Motion.kt`), everywhere in the app. Use `fast()` for every animationSpec instead of Compose/Material defaults. Exception until material3 1.5 is stable: Material's internal motion (bottom sheets), because `MaterialTheme(motionScheme = …)` is internal in 1.4.0.

@@ -200,7 +200,7 @@ fun CollectionScreen(collection: Collection) {
                     }
                     Spacer(Modifier.width(4.dp))
                     FilledIconButton(
-                        onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, contextUri = collection.contextUri(c.username.value)) },
+                        onClick = { if (shownTracks.isNotEmpty()) c.player.play(shownTracks, contextUri = collection.contextUri(c.username.value), contextTitle = collection.title) },
                         modifier = Modifier.size(56.dp),
                     ) { Icon(Icons.Default.PlayArrow, "Play", modifier = Modifier.size(32.dp)) }
                 }
@@ -228,7 +228,7 @@ fun CollectionScreen(collection: Collection) {
                 TrackRow(
                     t,
                     playing = playerState.current?.id == t.id,
-                    onClick = { c.player.play(shownTracks, shown.indexOf(row), contextUri = collection.contextUri(c.username.value)) },
+                    onClick = { c.player.play(shownTracks, shown.indexOf(row), contextUri = collection.contextUri(c.username.value), contextTitle = collection.title) },
                     downloaded = t.id in downloadedIds,
                     onMore = { menu = TrackMenu(t, context = collection, occurrence = row.occurrence) },
                     onSwipeQueue = { c.player.addToQueue(t) },

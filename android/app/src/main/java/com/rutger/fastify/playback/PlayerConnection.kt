@@ -60,6 +60,7 @@ class PlayerConnection(
     private val context: Context,
     val remote: ConnectRemote,
     private val shuffles: ShuffleStore,
+    val contextTitles: ContextTitles,
     private val jam: () -> JamController,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -116,11 +117,13 @@ class PlayerConnection(
     /**
      * Play [tracks] from [startIndex] (-1 = from the top: a random track when shuffling).
      * `contextUri`: what the tracks are (spotify:playlist:..., album, artist, collection), seeds autoplay.
+     * `contextTitle`: its name, shown in the player header.
      * [shuffle] null: the context's own shuffle mode ([ShuffleStore]); no context keeps the
      * current mode. Shuffle is switched off and back on around the swap so the service
      * reshuffles with the start track first.
      */
-    fun play(tracks: List<Track>, startIndex: Int = -1, shuffle: Boolean? = null, contextUri: String? = null) {
+    fun play(tracks: List<Track>, startIndex: Int = -1, shuffle: Boolean? = null, contextUri: String? = null, contextTitle: String? = null) {
+        if (contextUri != null && contextTitle != null) contextTitles.set(contextUri, contextTitle)
         val sh = shuffle ?: contextUri?.let(shuffles::get)
         // Jam guest listening here: the Jam plays it (on every device), then relays it back.
         if (!remoteOn && tracks.isNotEmpty() && jam().guestSessionId != null) {

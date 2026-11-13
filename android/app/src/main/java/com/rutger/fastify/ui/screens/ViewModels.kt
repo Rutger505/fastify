@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Cache-first screen state: the snapshot for the first frame, then network refreshes.
@@ -90,33 +91,62 @@ class CollectionViewModel(
     }
 }
 
-data class SearchState(val query: String = "", val loading: Boolean = false, val results: SearchResults? = null, val error: String? = null)
+/** `catalogError`: album/playlist search failed while track search worked (or vice versa via [error]). */
+data class SearchState(
+    val query: String = "",
+    val loading: Boolean = false,
+    val results: SearchResults? = null,
+    val error: String? = null,
+    val catalogError: String? = null,
+)
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class SearchViewModel(private val repo: LibraryRepository) : ViewModel() {
     val query = MutableStateFlow("")
 
+    /** Tracks and albums/playlists load in parallel; each shows as soon as it's there. */
     val state: StateFlow<SearchState> = query
         .drop(1)
         .debounce(250)
         .distinctUntilChanged()
         .flatMapLatest { q ->
-            flow {
+            kotlinx.coroutines.flow.channelFlow {
                 if (q.isBlank()) {
-                    emit(SearchState(q))
-                    return@flow
+                    send(SearchState(q))
+                    return@channelFlow
                 }
-                emit(SearchState(q, loading = true))
-                emit(
-                    try {
-                        SearchState(q, results = repo.search(q))
-                    } catch (e: Exception) {
-                        if (e is kotlinx.coroutines.CancellationException) throw e
-                        com.rutger.fastify.diag.AppLog.w("Search", "search '$q' failed", e)
-                        SearchState(q, error = "${e.javaClass.simpleName}: ${e.message}")
-                    },
-                )
+                val lock = kotlinx.coroutines.sync.Mutex()
+                var tracks: Result<SearchResults>? = null
+                var catalog: Result<SearchResults>? = null
+                suspend fun publish() = lock.withLock {
+                    val t = tracks?.getOrNull()
+                    val cat = catalog?.getOrNull()
+                    val results = if (t == null && cat == null) null
+                    else SearchResults(t?.tracks.orEmpty(), cat?.albums.orEmpty(), cat?.playlists.orEmpty())
+                    send(
+                        SearchState(
+                            q,
+                            loading = tracks == null || catalog == null,
+                            results = results,
+                            error = tracks?.exceptionOrNull()?.let(::describe),
+                            catalogError = catalog?.exceptionOrNull()?.let(::describe),
+                        ),
+                    )
+                }
+                send(SearchState(q, loading = true))
+                launch { tracks = attempt(q, "tracks") { repo.search(q) }; publish() }
+                launch { catalog = attempt(q, "catalog") { repo.searchCatalog(q) }; publish() }
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SearchState())
 }
+
+private suspend fun <T> attempt(q: String, what: String, block: suspend () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: Exception) {
+    if (e is kotlinx.coroutines.CancellationException) throw e
+    com.rutger.fastify.diag.AppLog.w("Search", "search $what '$q' failed", e)
+    Result.failure(e)
+}
+
+private fun describe(e: Throwable) = "${e.javaClass.simpleName}: ${e.message}"

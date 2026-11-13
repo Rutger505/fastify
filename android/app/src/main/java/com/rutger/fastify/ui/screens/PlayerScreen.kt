@@ -236,6 +236,23 @@ private fun LyricsPreview(trackId: String?, onOpen: () -> Unit) {
     }
 }
 
+/**
+ * Header text: the playlist/album/artist playback was started from; the track's album when
+ * there's no context (search, recently played) or its name is unknown.
+ */
+fun contextTitle(c: com.rutger.fastify.AppContainer, uri: String?, track: com.rutger.fastify.data.Track?): String {
+    val album = track?.album.orEmpty()
+    uri ?: return album
+    if (uri.endsWith(":collection") || uri == "spotify:collection:tracks") return com.rutger.fastify.data.Collection.Liked.title
+    c.contextTitles.get(uri)?.let { return it }
+    val id = uri.substringAfterLast(':')
+    if (uri.startsWith("spotify:album:") && track?.albumId == id) return album
+    if (uri.startsWith("spotify:artist:")) track?.artistRefs?.firstOrNull { it.id == id }?.let { return it.name }
+    val home = c.library.cachedHome()
+    return (home?.playlists.orEmpty() + home?.topSongs.orEmpty() + home?.albums.orEmpty())
+        .firstOrNull { it.id == id }?.title ?: album
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(onClose: () -> Unit) {
@@ -253,6 +270,8 @@ fun PlayerScreen(onClose: () -> Unit) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
     val track = state.current
+    // Reads the library snapshot from disk when the name isn't recorded: only on context/track change.
+    val header = remember(state.contextUri, track) { contextTitle(c, state.contextUri, track) }
     // Drag the whole screen down to close it, like Spotify's now-playing view.
     var dragY by remember { mutableFloatStateOf(0f) }
     var height by remember { mutableIntStateOf(1) }
@@ -279,7 +298,7 @@ fun PlayerScreen(onClose: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, "Close") }
             Text(
-                track?.album.orEmpty(),
+                header,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,

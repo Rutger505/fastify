@@ -114,6 +114,24 @@ async fn main() {
             Ok(lines) => for l in lines { println!("{l}") },
             Err(e) => println!("ERR {e}"),
         },
+        "pf" => match core.clone().debug_pathfinder(args[3].clone(), args.get(4).cloned().unwrap_or("{}".into())).await {
+            Ok(j) => println!("{j}"),
+            Err(e) => println!("ERR {e}"),
+        },
+        "search" => {
+            let q = args[3].clone();
+            match core.clone().search_catalog(q).await {
+                Ok(r) => {
+                    for a in r.albums { println!("album {} {} - {} [{} {:?}] {:?}", a.id, a.name, a.artists, a.album_type, a.year, a.image_url) }
+                    for p in r.playlists { println!("playlist {} {} by {} {:?}", p.id, p.name, p.owner, p.image_url) }
+                }
+                Err(e) => println!("ERR {e}"),
+            }
+        }
+        "topsongs" => match core.clone().top_songs_playlists().await {
+            Ok(l) => for p in l { println!("{} {} by {} {:?}", p.id, p.name, p.owner, p.image_url) },
+            Err(e) => println!("ERR {e}"),
+        },
         "raw" => {
             let path = args.get(3).expect("path");
             match core.clone().spclient_get(path.clone()).await {

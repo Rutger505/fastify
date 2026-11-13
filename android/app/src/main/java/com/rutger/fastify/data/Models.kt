@@ -56,6 +56,8 @@ data class HomeData(
     val recent: List<Track> = emptyList(),
     val playlists: List<Collection> = emptyList(),
     val albums: List<Collection> = emptyList(),
+    /** Wrapped "Your Top Songs <year>" playlists, newest first (not in the rootlist). */
+    val topSongs: List<Collection> = emptyList(),
 )
 
 @Serializable

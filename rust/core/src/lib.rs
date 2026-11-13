@@ -59,6 +59,13 @@ const FORMAT_PREFERENCE: [AudioFileFormat; 3] = [
     AudioFileFormat::OGG_VORBIS_96,
 ];
 
+/// Album + playlist search results (pathfinder).
+#[derive(uniffi::Record)]
+pub struct CatalogSearch {
+    pub albums: Vec<AlbumInfo>,
+    pub playlists: Vec<PlaylistInfo>,
+}
+
 #[derive(uniffi::Record)]
 pub struct AccessToken {
     pub token: String,
@@ -201,6 +208,15 @@ impl FastifyCore {
     /// Recognize a song from 16 kHz mono PCM (Shazam via SongRec's fingerprint). None = no match.
     pub async fn shazam(self: Arc<Self>, pcm: Vec<i16>) -> Result<Option<shazam::ShazamMatch>, CoreError> {
         self.rt.spawn(shazam::recognize(pcm)).await.map_err(CoreError::other)?
+    }
+
+    /// Debug: raw pathfinder query (`op`, JSON variables) -> JSON `data`. Probe only.
+    pub async fn debug_pathfinder(self: Arc<Self>, op: String, variables: String) -> Result<String, CoreError> {
+        let vars: serde_json::Value = serde_json::from_str(&variables).map_err(CoreError::other)?;
+        self.with_session(|s| async move {
+            Ok(pathfinder::query(&s, &op, vars).await?.to_string())
+        })
+        .await
     }
 
     pub async fn spclient_get(self: Arc<Self>, path: String) -> Result<Vec<u8>, CoreError> {
@@ -406,6 +422,21 @@ impl FastifyCore {
         query: String,
     ) -> Result<Vec<TrackInfo>, CoreError> {
         self.with_session(|s| async move { library::search_tracks(&s, &query).await })
+            .await
+    }
+
+    /// Albums + playlists matching `query` (pathfinder; track search is [Self::search_tracks]).
+    pub async fn search_catalog(self: Arc<Self>, query: String) -> Result<CatalogSearch, CoreError> {
+        self.with_session(|s| async move {
+            let (albums, playlists) = pathfinder::search_catalog(&s, &query, 10).await?;
+            Ok(CatalogSearch { albums, playlists })
+        })
+        .await
+    }
+
+    /// The user's Wrapped "Your Top Songs <year>" playlists, newest first.
+    pub async fn top_songs_playlists(self: Arc<Self>) -> Result<Vec<PlaylistInfo>, CoreError> {
+        self.with_session(|s| async move { pathfinder::top_songs_playlists(&s).await })
             .await
     }
 

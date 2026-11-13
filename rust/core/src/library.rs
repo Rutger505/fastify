@@ -38,7 +38,10 @@ pub struct TrackInfo {
 pub struct PlaylistInfo {
     pub id: String,
     pub name: String,
+    /// Owner's username (decides editability).
     pub owner: String,
+    /// Owner's display name when known (search), else empty: show `owner`.
+    pub owner_name: String,
     pub image_url: Option<String>,
     pub length: u32,
 }
@@ -278,6 +281,7 @@ pub async fn rootlist(session: &Session) -> Result<Vec<PlaylistInfo>, CoreError>
                 owner: meta
                     .map(|m| m.owner_username().to_owned())
                     .unwrap_or_default(),
+                owner_name: String::new(),
                 image_url: attrs.and_then(playlist_image),
                 length: meta.map(|m| m.length().max(0) as u32).unwrap_or(0),
             });

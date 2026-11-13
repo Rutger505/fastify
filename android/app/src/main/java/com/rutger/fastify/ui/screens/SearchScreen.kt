@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
@@ -47,6 +46,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.rutger.fastify.ui.LocalNavigator
+import com.rutger.fastify.data.Collection
+import com.rutger.fastify.data.Track
+
+/** Songs shown above the album/playlist shelves. */
+private const val TOP_SONGS = 4
 
 @Composable
 fun SearchScreen() {
@@ -112,24 +116,25 @@ fun SearchScreen() {
         }
         when {
             state.loading && results == null -> Box(Modifier.fillMaxWidth().padding(32.dp), Alignment.Center) { CircularProgressIndicator() }
-            state.error != null -> ErrorCard("Search failed", state.error!!)
+            state.error != null -> ErrorCard("Song search failed", state.error!!)
         }
+        state.catalogError?.let { ErrorCard("Album/playlist search failed", it) }
         if (results != null) {
+            // A few songs first, then the album/playlist shelves, then the rest of the songs.
+            val songs = results.tracks.withIndex().toList()
+            val songRow: @Composable (IndexedValue<Track>) -> Unit = { (i, t) ->
+                TrackRow(t, playing = playerState.current?.id == t.id, onClick = { saveQuery(); c.player.play(results.tracks, i) },
+                    downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, onSwipeQueue = { c.player.addToQueue(t) })
+            }
+            val open = { col: Collection -> saveQuery(); onOpen(col) }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-                if (results.tracks.isNotEmpty()) {
-                    item { SectionHeader("Songs") }
-                    itemsIndexed(results.tracks, key = { _, t -> "t" + t.id }) { i, t ->
-                        TrackRow(t, playing = playerState.current?.id == t.id, onClick = { saveQuery(); c.player.play(results.tracks, i) },
-                            downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, onSwipeQueue = { c.player.addToQueue(t) })
-                    }
-                }
-                if (results.albums.isNotEmpty()) {
-                    item { SectionHeader("Albums") }
-                    items(results.albums, key = { "a" + it.id }) { CollectionRow(it) { saveQuery(); onOpen(it) } }
-                }
-                if (results.playlists.isNotEmpty()) {
-                    item { SectionHeader("Playlists") }
-                    items(results.playlists, key = { "p" + it.id }) { CollectionRow(it) { saveQuery(); onOpen(it) } }
+                if (songs.isNotEmpty()) item { SectionHeader("Songs") }
+                items(songs.take(TOP_SONGS), key = { "t" + it.index }) { songRow(it) }
+                if (results.playlists.isNotEmpty()) item { AlbumShelf("Playlists", results.playlists, open) }
+                if (results.albums.isNotEmpty()) item { AlbumShelf("Albums", results.albums, open) }
+                if (songs.size > TOP_SONGS) {
+                    item { SectionHeader("More songs") }
+                    items(songs.drop(TOP_SONGS), key = { "t" + it.index }) { songRow(it) }
                 }
             }
         }

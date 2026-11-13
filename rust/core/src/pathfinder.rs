@@ -1,5 +1,6 @@
 //! Spotify's web GraphQL API ("pathfinder"), used only for data no spclient endpoint carries:
-//! play counts of an artist's top tracks.
+//! play counts of an artist's top tracks, album/playlist search (context-resolve search is tracks
+//! only) and the personal Wrapped "Your Top Songs <year>" playlists (not in the rootlist unless saved).
 //!
 //! Queries are persisted: the client sends an operation name plus the sha256 of the query text.
 //! Spotify changes those hashes when it redeploys the web player, so when the server rejects a
@@ -18,6 +19,7 @@ use librespot_core::Session;
 use serde_json::{Value, json};
 
 use crate::CoreError;
+use crate::library::{AlbumInfo, ArtistRef, PlaylistInfo};
 
 const ENDPOINT: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
 const WEB_PLAYER: &str = "https://open.spotify.com/";
@@ -25,10 +27,11 @@ const WEB_PLAYER: &str = "https://open.spotify.com/";
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
 /// Hashes known to work (scraped 2026-10-30). Replaced at runtime when they go stale.
-const KNOWN_HASHES: &[(&str, &str)] = &[(
-    "queryArtistOverview",
-    "9f8134ef565e78621f1e1793555bd6633c5ac144ae0f89604ed3ae3f80b3c8e6",
-)];
+const KNOWN_HASHES: &[(&str, &str)] = &[
+    ("queryArtistOverview", "9f8134ef565e78621f1e1793555bd6633c5ac144ae0f89604ed3ae3f80b3c8e6"),
+    ("searchDesktop", "eef7cc54888d91bdd6802623477873caa3948ae173a0c34fd86827b267e94c03"),
+    ("searchPlaylists", "d520014e748f9ea44f7707d8df1819867ac1205e8b7f3e28f22fe5fc858921b1"),
+];
 
 type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
 
@@ -84,28 +87,74 @@ async fn get_text(url: &str) -> Result<String, CoreError> {
     Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
-/// Finds `"<op>","query","<hash>"` in the web player's scripts.
+/// Finds `"<op>","query","<hash>"` in the web player's scripts: the entry bundles first, then the
+/// lazily loaded chunks (search queries live in `xpui-routes-search`), named ones first.
 async fn scrape_hash(op: &str) -> Result<String, CoreError> {
     let html = get_text(WEB_PLAYER).await?;
     let needle = format!("\"{op}\",\"query\",\"");
-    let scripts = html
+    let find = |js: &str| {
+        let rest = js.split(&needle).nth(1)?;
+        let hash: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+        (hash.len() == 64).then_some(hash)
+    };
+    let scripts: Vec<String> = html
         .split("src=\"")
         .skip(1)
         .filter_map(|s| s.split('"').next())
-        .filter(|u| u.starts_with("https://") && u.ends_with(".js") && u.contains("web-player"));
-    for url in scripts {
+        .filter(|u| u.starts_with("https://") && u.ends_with(".js") && u.contains("web-player"))
+        .map(str::to_owned)
+        .collect();
+    let mut chunks = Vec::new();
+    for url in &scripts {
         let js = get_text(url).await?;
-        if let Some(rest) = js.split(&needle).nth(1) {
-            let hash: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
-            if hash.len() == 64 {
-                log::info!("pathfinder: {op} hash refreshed from {url}");
-                return Ok(hash);
-            }
+        if let Some(hash) = find(&js) {
+            log::info!("pathfinder: {op} hash refreshed from {url}");
+            return Ok(hash);
+        }
+        if let Some(base) = url.rsplit_once('/').map(|(b, _)| b) {
+            chunks.extend(chunk_urls(&js).into_iter().map(|c| format!("{base}/{c}")));
+        }
+    }
+    for url in chunks {
+        // A chunk that fails to load can't hold the hash; keep looking.
+        let Ok(js) = get_text(&url).await else { continue };
+        if let Some(hash) = find(&js) {
+            log::info!("pathfinder: {op} hash refreshed from {url}");
+            return Ok(hash);
         }
     }
     Err(CoreError::other(format!(
         "pathfinder: no hash for {op} in the web player"
     )))
+}
+
+/// Lazy chunk file names from the bundler's url function:
+/// `.u=e=>""+(({<id>:"<name>",...})[e]||e)+"."+({<id>:"<hash>",...})[e]+".js"`. Named chunks first.
+fn chunk_urls(js: &str) -> Vec<String> {
+    const START: &str = ".u=e=>\"\"+(({";
+    const MID: &str = "})[e]||e)+\".\"+({";
+    const END: &str = "})[e]+\".js\"";
+    let Some(rest) = js.split(START).nth(1) else { return Vec::new() };
+    let Some((names, rest)) = rest.split_once(MID) else { return Vec::new() };
+    let Some((hashes, _)) = rest.split_once(END) else { return Vec::new() };
+    let pairs = |s: &str| -> Vec<(String, String)> {
+        s.split(',')
+            .filter_map(|kv| {
+                let (k, v) = kv.split_once(':')?;
+                Some((k.trim_matches('"').to_owned(), v.trim_matches('"').to_owned()))
+            })
+            .collect()
+    };
+    let names: HashMap<String, String> = pairs(names).into_iter().collect();
+    let mut urls: Vec<(bool, String)> = pairs(hashes)
+        .into_iter()
+        .map(|(id, hash)| match names.get(&id) {
+            Some(name) => (false, format!("{name}.{hash}.js")),
+            None => (true, format!("{id}.{hash}.js")),
+        })
+        .collect();
+    urls.sort_by_key(|(unnamed, _)| *unnamed);
+    urls.into_iter().map(|(_, u)| u).collect()
 }
 
 /// Runs a persisted query and returns its `data` object.
@@ -233,4 +282,116 @@ pub async fn artist_playcounts(
         .collect();
     log::info!("artist {artist_id}: {} play counts", counts.len());
     Ok(counts)
+}
+
+/// Albums + playlists for a search query (`searchDesktop`, like the web player's search page).
+pub async fn search_catalog(
+    session: &Session,
+    query: &str,
+    limit: u32,
+) -> Result<(Vec<AlbumInfo>, Vec<PlaylistInfo>), CoreError> {
+    let data = search_desktop(session, query, limit).await?;
+    let items = |path: &str| {
+        data.pointer(path)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|i| i.get("data")).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let albums: Vec<AlbumInfo> = items("/searchV2/albumsV2/items").into_iter().filter_map(album).collect();
+    let playlists: Vec<PlaylistInfo> = items("/searchV2/playlists/items").into_iter().filter_map(|p| playlist(p).map(|(p, _)| p)).collect();
+    log::info!("search '{query}': {} albums, {} playlists", albums.len(), playlists.len());
+    Ok((albums, playlists))
+}
+
+/// The user's Wrapped "Your Top Songs <year>" playlists, newest first. Spotify only finds them by
+/// search; they're recognised by owner `spotify` + a `wrapped-<year>-...` format.
+pub async fn top_songs_playlists(session: &Session) -> Result<Vec<PlaylistInfo>, CoreError> {
+    let data = search_desktop(session, "Your Top Songs", 50).await?;
+    let mut found: Vec<(i32, PlaylistInfo)> = data
+        .pointer("/searchV2/playlists/items")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|i| i.get("data")).filter_map(playlist).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(p, format)| {
+            let year = format.strip_prefix("wrapped-")?.split('-').next()?.parse().ok()?;
+            (p.owner == "spotify").then_some((year, p))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.dedup_by(|a, b| a.1.id == b.1.id);
+    log::info!("top songs playlists: {:?}", found.iter().map(|(y, _)| y).collect::<Vec<_>>());
+    Ok(found.into_iter().map(|(_, p)| p).collect())
+}
+
+async fn search_desktop(session: &Session, term: &str, limit: u32) -> Result<Value, CoreError> {
+    query(
+        session,
+        "searchDesktop",
+        json!({
+            "searchTerm": term,
+            "offset": 0,
+            "limit": limit,
+            "numberOfTopResults": 5,
+            "includeAudiobooks": false,
+            "includeArtistHasConcertsField": false,
+            "includePreReleases": false,
+            "includeLocalConcertsField": false,
+            "includeAuthors": false,
+        }),
+    )
+    .await
+}
+
+fn largest_source(sources: Option<&Value>) -> Option<String> {
+    sources?
+        .as_array()?
+        .iter()
+        .max_by_key(|s| s.get("width").and_then(Value::as_u64).unwrap_or(0))?
+        .get("url")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn album(a: &Value) -> Option<AlbumInfo> {
+    let id = a.get("uri")?.as_str()?.strip_prefix("spotify:album:")?.to_owned();
+    let artist_refs: Vec<ArtistRef> = a
+        .pointer("/artists/items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|x| {
+                    Some(ArtistRef {
+                        id: x.get("uri")?.as_str()?.strip_prefix("spotify:artist:")?.to_owned(),
+                        name: x.pointer("/profile/name")?.as_str()?.to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(AlbumInfo {
+        id,
+        name: a.get("name")?.as_str()?.to_owned(),
+        artists: artist_refs.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
+        image_url: largest_source(a.pointer("/coverArt/sources")),
+        artist_refs,
+        year: a.pointer("/date/year").and_then(Value::as_i64).map(|y| y as i32),
+        album_type: a.get("type").and_then(Value::as_str).unwrap_or("").to_lowercase(),
+        release_date: None,
+    })
+}
+
+/// Playlist + its `format` ("wrapped-2025-top100", usually empty).
+fn playlist(p: &Value) -> Option<(PlaylistInfo, String)> {
+    let id = p.get("uri")?.as_str()?.strip_prefix("spotify:playlist:")?.to_owned();
+    let info = PlaylistInfo {
+        id,
+        name: p.get("name")?.as_str()?.to_owned(),
+        owner: p.pointer("/ownerV2/data/username").and_then(Value::as_str).unwrap_or("").to_owned(),
+        owner_name: p.pointer("/ownerV2/data/name").and_then(Value::as_str).unwrap_or("").to_owned(),
+        image_url: largest_source(p.pointer("/images/items/0/sources")),
+        length: 0,
+    };
+    Some((info, p.get("format").and_then(Value::as_str).unwrap_or("").to_owned()))
 }

@@ -2,6 +2,7 @@ package com.rutger.fastify.data
 
 import com.rutger.fastify.core.AlbumInfo
 import com.rutger.fastify.core.FastifyCore
+import com.rutger.fastify.core.PlaylistInfo
 import com.rutger.fastify.core.TrackInfo
 import com.rutger.fastify.diag.AppLog
 import kotlinx.coroutines.CancellationException
@@ -105,6 +106,15 @@ class LibraryRepository(
     suspend fun search(query: String): SearchResults =
         SearchResults(tracks = timed("search '$query'") { core().searchTracks(query) }.map { it.toTrack() })
 
+    /** Albums + playlists for [query] (separate call: pathfinder, slower than track search). */
+    suspend fun searchCatalog(query: String): SearchResults {
+        val r = timed("catalog search '$query'") { core().searchCatalog(query) }
+        return SearchResults(
+            albums = r.albums.map { it.toCollection(showArtists = true) }.distinctBy { it.id },
+            playlists = r.playlists.map { it.toCollection() }.distinctBy { it.id },
+        )
+    }
+
     /**
      * Shazam [pcm] (16 kHz mono) and map the hit to Spotify. tracks[0] is the best match: Shazam's own
      * Spotify link, else the first search hit whose title equals Shazam's, else the first hit. The rest
@@ -177,16 +187,17 @@ class LibraryRepository(
                 .onFailure { AppLog.w("Library", "saved albums failed: ${it.message}") }
                 .getOrDefault(emptyList())
         }
+        // Wrapped playlists aren't in the rootlist; keep the cached ones when the lookup fails.
+        val topSongs = async {
+            runCatching { timed("top songs") { core().topSongsPlaylists() }.map { it.toCollection() } }
+                .onFailure { AppLog.w("Library", "top songs playlists failed: ${it.message}") }
+                .getOrElse { cachedHome()?.topSongs.orEmpty() }
+        }
         HomeData(
             recent = history.recent(),
-            playlists = playlists.await().map {
-                Collection(CollectionKind.PLAYLIST, it.id, it.name.ifEmpty { "Untitled" },
-                    listOfNotNull(it.owner.takeIf(String::isNotEmpty)?.let { o -> "By $o" },
-                        "${it.length} songs").joinToString(" • "),
-                    it.imageUrl,
-                    owner = it.owner.takeIf(String::isNotEmpty))
-            },
+            playlists = playlists.await().map { it.toCollection() },
             albums = albums.await().map { Collection(CollectionKind.ALBUM, it.id, it.name, it.artists, it.imageUrl) },
+            topSongs = topSongs.await(),
         )
     }
 
@@ -228,6 +239,17 @@ fun TrackInfo.toTrack() = Track(
     id, title, artists, album, imageUrl, durationMs.toLong(),
     artistRefs = artistRefs.map { ArtistRef(it.id, it.name) },
     albumId = albumId,
+)
+
+/** "By <owner> • N songs"; search results don't know the length. */
+fun PlaylistInfo.toCollection() = Collection(
+    CollectionKind.PLAYLIST, id, name.ifEmpty { "Untitled" },
+    listOfNotNull(
+        (ownerName.ifEmpty { owner }).takeIf(String::isNotEmpty)?.let { "By $it" },
+        length.takeIf { it > 0u }?.let { "$it songs" },
+    ).joinToString(" • "),
+    imageUrl,
+    owner = owner.takeIf(String::isNotEmpty),
 )
 
 private val typeLabels = mapOf("album" to "Album", "single" to "Single", "ep" to "EP", "compilation" to "Compilation")

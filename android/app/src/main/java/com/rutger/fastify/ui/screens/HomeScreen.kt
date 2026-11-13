@@ -128,12 +128,18 @@ fun HomeScreen() {
 
             item { SectionHeader("Your library") }
             item { CollectionRow(Collection.Liked, downloaded = Collection.Liked.cacheKey in pinnedKeys) { nav.openCollection(Collection.Liked) } }
-            items(home.playlists, key = { "p" + it.id }) { playlist ->
+            // Saved Wrapped playlists show under "Your top songs" only.
+            val topSongIds = home.topSongs.map { it.id }.toSet()
+            items(home.playlists.filter { it.id !in topSongIds }, key = { "p" + it.id }) { playlist ->
                 CollectionRow(
                     playlist,
                     downloaded = playlist.cacheKey in pinnedKeys,
                     playlistArtwork = playlistArtwork[playlist.id] ?: emptyList(),
                 ) { nav.openCollection(playlist) }
+            }
+            if (home.topSongs.isNotEmpty()) {
+                item { SectionHeader("Your top songs") }
+                items(home.topSongs, key = { "y" + it.id }) { CollectionRow(it, downloaded = it.cacheKey in pinnedKeys) { nav.openCollection(it) } }
             }
             if (home.albums.isNotEmpty()) {
                 item { SectionHeader("Albums") }
