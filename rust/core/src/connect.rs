@@ -172,9 +172,10 @@ pub enum ConnectRequest {
     SeekTo { position_ms: u64 },
     SetOptions { shuffle: Option<bool>, repeat_context: Option<bool>, repeat_track: Option<bool> },
     AddToQueue { track: TrackInfo },
-    /// New upcoming list (order + removals), uids as published. Covers at most the published
-    /// window (MAX_NEXT): items past it are kept.
-    SetQueue { next: Vec<RemoteTrack> },
+    /// New upcoming list (order, removals, additions), uids as published. Covers at most the
+    /// published window (MAX_NEXT): items past it are kept. added: metadata for tracks in next
+    /// we never published (a Jam guest's "add to queue" arrives like this).
+    SetQueue { next: Vec<RemoteTrack>, added: Vec<TrackInfo> },
     /// Event: metadata for tracks a big Load sent as stubs (id only, empty title). missing:
     /// ids without metadata (unavailable), drop them.
     Metadata { tracks: Vec<TrackInfo>, missing: Vec<String> },
@@ -776,7 +777,7 @@ async fn handle_command(
         let _ = reply.send(Reply::Failure);
         return;
     }
-    match to_request(session, req.command).await {
+    match to_request(session, sh, req.command).await {
         Ok(Some((cmd, activates, stubs))) => {
             sh.push(from.clone(), cmd, Some((reply, activates)));
             if !stubs.is_empty() {
@@ -813,6 +814,7 @@ async fn fill_stubs(session: Session, sh: Arc<Shared>, from: String, ids: Vec<St
 /// (acknowledged right away).
 async fn to_request(
     session: &Session,
+    sh: &Arc<Shared>,
     command: Command,
 ) -> Result<Option<(ConnectRequest, bool, Vec<String>)>, CoreError> {
     use ConnectRequest as R;
@@ -836,27 +838,72 @@ async fn to_request(
         Command::SetOptions(o) => {
             (none(o.shuffling_context, o.repeating_context, o.repeating_track), false)
         }
-        Command::AddToQueue(a) => {
-            let id = library::id_from_uri(a.track.uri.as_str(), "track")
-                .ok_or_else(|| CoreError::NotFound { msg: format!("can't queue {}", a.track.uri) })?
-                .to_owned();
-            let track = library::hydrate_tracks(session, &[id.clone()])
-                .await?
-                .pop()
-                .ok_or_else(|| CoreError::NotFound { msg: format!("track {id}") })?;
-            (R::AddToQueue { track }, false)
-        }
+        Command::AddToQueue(a) => (add_to_queue(session, &a.track.uri).await?, false),
         Command::SetQueue(q) => {
-            (R::SetQueue { next: q.next_tracks.iter().map(remote_track).collect() }, false)
+            (set_queue(session, sh, q.next_tracks.iter().map(remote_track).collect()).await?, false)
         }
         Command::SkipNext(s) => (R::SkipNext { track: s.track.as_ref().map(remote_track) }, false),
         Command::SkipPrev(_) => (R::SkipPrev, false),
         Command::UpdateContext(_) => return Ok(None),
-        Command::Unknown(v) => {
-            return Err(CoreError::NotFound { msg: format!("unsupported command {v}") });
-        }
+        // Strict parsing failed (e.g. set_queue without queue_revision): read what we need.
+        Command::Unknown(v) => match v.get("endpoint").and_then(Value::as_str) {
+            Some("add_to_queue") => {
+                let uri = v.pointer("/track/uri").and_then(Value::as_str).unwrap_or_default();
+                (add_to_queue(session, uri).await?, false)
+            }
+            Some("set_queue") => {
+                let next = v
+                    .get("next_tracks")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().map(json_track).collect())
+                    .unwrap_or_default();
+                (set_queue(session, sh, next).await?, false)
+            }
+            _ => return Err(CoreError::NotFound { msg: format!("unsupported command {v}") }),
+        },
     };
     Ok(Some((r.0, r.1, Vec::new())))
+}
+
+fn json_track(t: &Value) -> RemoteTrack {
+    let s = |k: &str| t.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    RemoteTrack { uri: s("uri"), uid: s("uid"), provider: s("provider") }
+}
+
+async fn add_to_queue(session: &Session, uri: &str) -> Result<ConnectRequest, CoreError> {
+    let id = library::id_from_uri(uri, "track")
+        .ok_or_else(|| CoreError::NotFound { msg: format!("can't queue {uri}") })?
+        .to_owned();
+    let track = library::hydrate_tracks(session, &[id.clone()])
+        .await?
+        .pop()
+        .ok_or_else(|| CoreError::NotFound { msg: format!("track {id}") })?;
+    Ok(ConnectRequest::AddToQueue { track })
+}
+
+/// Tracks in next we never published (no or unknown uid) are additions: Jam guests queue by
+/// sending set_queue with the new track in it. Hydrate those for the player.
+async fn set_queue(session: &Session, sh: &Arc<Shared>, next: Vec<RemoteTrack>) -> Result<ConnectRequest, CoreError> {
+    let known: std::collections::HashSet<String> = sh
+        .local
+        .borrow()
+        .as_ref()
+        .map(|l| l.track.iter().chain(&l.prev_tracks).chain(&l.next_tracks).map(|t| t.uid.clone()).collect())
+        .unwrap_or_default();
+    let mut new_ids: Vec<String> = next
+        .iter()
+        .filter(|t| t.uid.is_empty() || !known.contains(&t.uid))
+        .filter_map(|t| library::id_from_uri(&t.uri, "track").map(str::to_owned))
+        .collect();
+    new_ids.sort();
+    new_ids.dedup();
+    let added = if new_ids.is_empty() {
+        Vec::new()
+    } else {
+        log::info!("set_queue adds {} track(s)", new_ids.len());
+        library::hydrate_tracks(session, &new_ids).await?
+    };
+    Ok(ConnectRequest::SetQueue { next, added })
 }
 
 /// Context uri; the desktop sends "-" in autoplay, the original context is in reporting.uri.

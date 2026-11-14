@@ -57,7 +57,7 @@ async fn main() {
             }
         }
         "cmd" => {
-            // cmd <device> pause|resume|next|prev|seek <ms>|shuffle <bool>|queue <track>|play <ctx|-> <track,...> <i>|volume <0..65535>|transfer <to>
+            // cmd <device> pause|resume|next|prev|seek <ms>|shuffle <bool>|queue <track>|qset <track>|play <ctx|-> <track,...> <i>|volume <0..65535>|transfer <to>
             use fastify_core::RemoteCommand as C;
             let dev = args[3].clone();
             let a = |i: usize| args.get(i).cloned().unwrap_or_default();
@@ -81,6 +81,22 @@ async fn main() {
                         shuffle: None,
                     },
                     "volume" => C::Volume { volume: a(5).parse().unwrap() },
+                    // Like a Jam guest's "add to queue": set_queue with a new track (no uid) first.
+                    "qset" => {
+                        let mut s = core.clone().connect_watch(0).await.expect("watch");
+                        for _ in 0..10 {
+                            if s.ready { break; }
+                            s = core.clone().connect_watch(s.version).await.expect("watch");
+                        }
+                        let mut next = vec![fastify_core::RemoteTrack { uri: format!("spotify:track:{}", a(5)), uid: String::new(), provider: "queue".into() }];
+                        // Not the active device: the cluster's queue isn't its own, send just the new track.
+                        if s.active_device_id.as_deref() != Some(dev.as_str()) {
+                            C::SetQueue { next, prev: Vec::new(), revision: String::new() }
+                        } else {
+                            next.extend(s.next_tracks);
+                            C::SetQueue { next, prev: s.prev_tracks, revision: s.queue_revision }
+                        }
+                    }
                     other => panic!("unknown cmd {other}"),
                 };
                 // Commands need a registered connection: start the observer first.
@@ -395,7 +411,8 @@ async fn target(core: Arc<FastifyCore>, name: String, secs: u64, track: Option<S
                 queue.insert(at_i, (track.id.clone(), "queue".into()));
                 println!("QUEUE {} - {}", track.title, track.artists);
             }
-            R::SetQueue { next } => {
+            R::SetQueue { next, added } => {
+                for t in added { println!("SET_QUEUE adds {} - {}", t.title, t.artists); }
                 let keep: Vec<&str> = next.iter().map(|t| t.uid.as_str()).collect();
                 let before = queue.len();
                 queue = queue.iter().enumerate().filter(|(i, _)| *i <= index || keep.contains(&format!("fy{i}").as_str())).map(|(_, q)| q.clone()).collect();

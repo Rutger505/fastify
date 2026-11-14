@@ -13,6 +13,7 @@ import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.core.IncomingRequest
 import com.rutger.fastify.core.LocalPlayer
 import com.rutger.fastify.core.RemoteTrack
+import com.rutger.fastify.core.TrackInfo
 import com.rutger.fastify.data.toTrack
 import com.rutger.fastify.diag.AppLog
 import kotlin.coroutines.cancellation.CancellationException
@@ -135,18 +136,8 @@ class ConnectTarget(
                 cmd.shuffle?.let { player.shuffleModeEnabled = it }
                 setRepeat(cmd.repeatContext, cmd.repeatTrack)
             }
-            is ConnectRequest.AddToQueue -> {
-                val item = cmd.track.toTrack().toMediaItem(queued = true)
-                if (player.mediaItemCount == 0) {
-                    player.setMediaItem(item)
-                    player.prepare()
-                    return
-                }
-                var at = player.currentMediaItemIndex + 1
-                while (at < player.mediaItemCount && player.getMediaItemAt(at).isQueued) at++
-                player.addMediaItem(at, item)
-            }
-            is ConnectRequest.SetQueue -> setQueue(cmd.next.map { it.uid })
+            is ConnectRequest.AddToQueue -> addQueued(cmd.track.toTrack().toMediaItem(queued = true))
+            is ConnectRequest.SetQueue -> setQueue(cmd.next, cmd.added)
             is ConnectRequest.Metadata -> fillStubs(cmd)
             is ConnectRequest.Volume -> {
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -157,12 +148,35 @@ class ConnectTarget(
         }
     }
 
+    /** After the current track and earlier queued ones, like a local "Add to queue". */
+    private fun addQueued(item: MediaItem) {
+        if (player.mediaItemCount == 0) {
+            player.setMediaItem(item)
+            player.prepare()
+            return
+        }
+        var at = player.currentMediaItemIndex + 1
+        while (at < player.mediaItemCount && player.getMediaItemAt(at).isQueued) at++
+        player.addMediaItem(at, item)
+    }
+
     /**
      * The sender saw only the published window (MAX_NEXT upcoming): drop window items missing
-     * from [wanted], keep everything past it, and follow its order (not while shuffling: the
-     * window is the shuffle order there, not the item order).
+     * from [next], add ones we don't have ([added] metadata; Jam guests queue this way), keep
+     * everything past the window, and follow its order (not while shuffling: the window is the
+     * shuffle order there, not the item order).
      */
-    private fun setQueue(wanted: List<String>) {
+    private fun setQueue(next: List<RemoteTrack>, added: List<TrackInfo>) {
+        val known = (0 until player.mediaItemCount).map(::uid).toSet()
+        val info = added.associateBy { it.id }
+        val wanted = next.map { t ->
+            if (t.uid.isNotEmpty() && t.uid in known) return@map t.uid
+            val track = info[t.uri.removePrefix("spotify:track:")] ?: return@map t.uid
+            val uid = t.uid.ifEmpty { newUid() }
+            addQueued(track.toTrack().toMediaItem(autoplay = t.provider == "autoplay", queued = t.provider == "queue", uid = uid))
+            AppLog.i(TAG, "set_queue added ${track.id} (${t.provider})")
+            uid
+        }
         val order = playOrder()
         val window = order.drop(order.indexOf(player.currentMediaItemIndex) + 1).take(MAX_NEXT)
         val keep = wanted.toSet()
