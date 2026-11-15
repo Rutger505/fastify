@@ -45,6 +45,7 @@ class PlaybackService : MediaSessionService() {
     private var autoplayExhausted: String? = null
     private var connect: ConnectTarget? = null
     private var playbackLog: PlaybackLog? = null
+    private var focusGuard: FocusGuard? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -70,6 +71,7 @@ class PlaybackService : MediaSessionService() {
         player.setShuffleOrder(AppendingShuffleOrder(0))
         player.addListener(PlayerEvents())
         playbackLog = PlaybackLog(this, player).also { it.start() }
+        focusGuard = FocusGuard(this, player).also { it.start() }
 
         session = MediaSession.Builder(this, JamAwarePlayer(player, c.jam, ::caller))
             .setCallback(SessionCallback())
@@ -107,6 +109,8 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         playbackLog?.stop()
         playbackLog = null
+        focusGuard?.stop()
+        focusGuard = null
         connect?.stop()
         connect = null
         autoplayJob?.cancel()

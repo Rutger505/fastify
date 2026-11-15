@@ -38,7 +38,7 @@ class Diagnostics(private val c: AppContainer) {
                 val lines = AppLog.files.flatMap { it.readLines() }
                 val last = lines.lastOrNull { "core/connect" in it }
                 "${AppLog.files.sumOf { it.length() } / 1024} KB, ${lines.size} lines, " +
-                    "${lines.count { "/core/" in it }} core, ${lines.count { "/Playback: PAUSE" in it }} pauses; last connect: ${last ?: "-"}"
+                    "${lines.count { "/core/" in it }} core, ${lines.count { "/Playback: PAUSE" in it }} pauses, ${lines.count { "AUTO-RESUME" in it }} auto-resumes; last connect: ${last ?: "-"}"
             }
         }
         probe("App update") {
