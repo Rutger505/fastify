@@ -3,6 +3,7 @@
 //! Kotlin owns UI, metadata (Web API) and playback (Media3). Rust owns the Spotify session,
 //! audio keys, CDN downloads, decryption and the audio file cache.
 
+mod applog;
 mod catalog;
 mod connect;
 mod edit;
@@ -28,6 +29,7 @@ use librespot_metadata::{Metadata, Track};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
+pub use applog::{LogSink, set_log_sink};
 pub use catalog::{AlbumPage, ArtistPage, LyricLine, Lyrics};
 pub use connect::{
     ConnectRequest, IncomingRequest, LocalPlayer, RemoteCommand, RemoteDevice, RemoteState,
@@ -94,7 +96,7 @@ impl FastifyCore {
         cache_dir: String,
         audio_cache_bytes: u64,
     ) -> Result<Arc<Self>, CoreError> {
-        init_logging();
+        applog::init();
         let files = PathBuf::from(files_dir);
         let audio = PathBuf::from(cache_dir).join("audio");
         let cache = Cache::new(
@@ -844,15 +846,6 @@ impl FastifyCore {
             msg: format!("no playable Ogg Vorbis file for {track_id}"),
         })
     }
-}
-
-fn init_logging() {
-    #[cfg(target_os = "android")]
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Info)
-            .with_tag("fastify-core"),
-    );
 }
 
 // FileId is needed by keystore.

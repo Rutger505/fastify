@@ -233,6 +233,8 @@ struct Shared {
     kick: Notify,
     /// Jam push revision + its reason (session_update), bumped per push.
     jam_version: watch::Sender<(u64, String)>,
+    /// Last logged [cluster_summary]: log only changes.
+    last_cluster: Mutex<String>,
 }
 
 impl Shared {
@@ -279,6 +281,17 @@ impl Shared {
         }
         log::info!("connect: giving up playback");
         self.kick.notify_one();
+    }
+
+    /// Logs the cluster when the active device, its play state or the device list changed
+    /// (pause debugging: who claimed playback, and whether it played). [why]: push reason or put.
+    fn note_cluster(&self, c: &Cluster, me: &str, why: &str) {
+        let summary = cluster_summary(c, me);
+        let mut last = self.last_cluster.lock().unwrap();
+        if *last != summary {
+            log::info!("cluster ({why}): {summary}");
+            *last = summary;
+        }
     }
 
     /// Cluster from the server (push or PUT response): confirm our activation, or notice that
@@ -354,6 +367,7 @@ impl Hub {
                 put_active: AtomicBool::new(false),
                 kick: Notify::new(),
                 jam_version: watch::channel((0, String::new())).0,
+                last_cluster: Mutex::new(String::new()),
             }),
             task: Mutex::new(None),
         }
@@ -527,6 +541,10 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
             },
             upd = clusters.next() => match upd {
                 Some(Ok(upd)) => if let Some(c) = upd.cluster.as_ref() {
+                    let changed: Vec<&str> = upd.devices_that_changed.iter()
+                        .map(|d| if *d == me { "me" } else { c.device.get(d).map_or(d.as_str(), |i| i.name.as_str()) })
+                        .collect();
+                    sh.note_cluster(c, &me, &format!("{:?} by {}", upd.update_reason.enum_value_or_default(), changed.join(", ")));
                     publish(&sh.remote, c, &me);
                     sh.on_cluster(c, &me);
                     // Like spirc: another device changed the cluster while we're active, PUT our
@@ -633,6 +651,7 @@ async fn put(session: &Session, sh: &Arc<Shared>, reason: PutStateReason) -> Res
     sh.put_active.store(req.is_active, Ordering::Relaxed);
     let cluster = Cluster::parse_from_bytes(&bytes).map_err(CoreError::other)?;
     let me = session.device_id();
+    sh.note_cluster(&cluster, me, &format!("put {reason:?}"));
     publish(&sh.remote, &cluster, me);
     sh.on_cluster(&cluster, me);
     Ok(())
@@ -1081,6 +1100,35 @@ async fn load_from_transfer(
 
 fn remote_track(t: &ProvidedTrack) -> RemoteTrack {
     RemoteTrack { uri: t.uri.clone(), uid: t.uid.clone(), provider: t.provider.clone() }
+}
+
+/// One line: active device + its play state and origin, then all devices.
+fn cluster_summary(c: &Cluster, me: &str) -> String {
+    let name = |id: &str| {
+        if id == me {
+            "me".to_owned()
+        } else {
+            c.device.get(id).map_or_else(|| format!("{id} (gone)"), |d| d.name.clone())
+        }
+    };
+    let active = if c.active_device_id.is_empty() { "none".to_owned() } else { name(&c.active_device_id) };
+    let state = c.player_state.as_ref().map_or("no state".to_owned(), |p| {
+        let o = p.play_origin.as_ref();
+        format!(
+            "{}, track {}, origin {}/{}",
+            match (p.is_playing, p.is_paused) {
+                (true, false) => "playing",
+                (true, true) => "paused",
+                _ => "stopped",
+            },
+            p.track.as_ref().map_or("-", |t| t.uri.as_str()),
+            o.map_or("-", |o| o.feature_identifier.as_str()),
+            o.map_or("-", |o| o.device_identifier.as_str()),
+        )
+    });
+    let mut devices: Vec<String> = c.device.keys().map(|id| name(id)).collect();
+    devices.sort();
+    format!("active {active}: {state}; devices: {}", devices.join(", "))
 }
 
 fn publish(tx: &watch::Sender<RemoteState>, c: &Cluster, me: &str) {

@@ -44,6 +44,7 @@ class PlaybackService : MediaSessionService() {
     /** Seed + queue size of the last autoplay request that returned nothing: don't repeat it. */
     private var autoplayExhausted: String? = null
     private var connect: ConnectTarget? = null
+    private var playbackLog: PlaybackLog? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -68,8 +69,9 @@ class PlaybackService : MediaSessionService() {
             .build()
         player.setShuffleOrder(AppendingShuffleOrder(0))
         player.addListener(PlayerEvents())
+        playbackLog = PlaybackLog(this, player).also { it.start() }
 
-        session = MediaSession.Builder(this, JamAwarePlayer(player, c.jam))
+        session = MediaSession.Builder(this, JamAwarePlayer(player, c.jam, ::caller))
             .setCallback(SessionCallback())
             .setSessionActivity(
                 PendingIntent.getActivity(
@@ -87,7 +89,15 @@ class PlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
+    /** Controller of the session call running now: app UI, notification, Bluetooth, Assistant, ... */
+    private fun caller(): String {
+        val s = session ?: return "?"
+        val c = s.controllerForCurrentRequest ?: return "?"
+        return if (s.isMediaNotificationController(c)) "notification" else c.packageName
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
+        AppLog.i("Playback", "task removed (swiped away), playWhenReady ${player.playWhenReady}")
         if (!player.playWhenReady || player.mediaItemCount == 0) {
             saveQueue()
             stopSelf()
@@ -95,6 +105,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        playbackLog?.stop()
+        playbackLog = null
         connect?.stop()
         connect = null
         autoplayJob?.cancel()
@@ -308,6 +320,18 @@ class PlaybackService : MediaSessionService() {
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
             return super.onCustomCommand(session, controller, customCommand, args)
+        }
+
+        override fun onMediaButtonEvent(
+            session: MediaSession,
+            controllerInfo: MediaSession.ControllerInfo,
+            intent: Intent,
+        ): Boolean {
+            val key = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, android.view.KeyEvent::class.java)
+            if (key?.action == android.view.KeyEvent.ACTION_DOWN) {
+                AppLog.i("Playback", "media button ${android.view.KeyEvent.keyCodeToString(key.keyCode)} from ${controllerInfo.packageName}")
+            }
+            return super.onMediaButtonEvent(session, controllerInfo, intent)
         }
 
         override fun onAddMediaItems(

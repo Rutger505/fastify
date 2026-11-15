@@ -35,6 +35,8 @@ class AppContainer(val app: Application) {
 
     /** Rust core. Loading the native library happens on first use, off the main thread. */
     val core: FastifyCore by lazy {
+        // Core lines (Connect, session) into the log file too, before the core's first line.
+        com.rutger.fastify.core.setLogSink(com.rutger.fastify.diag.AppLog.CoreSink)
         FastifyCore(app.filesDir.absolutePath, app.cacheDir.absolutePath, AUDIO_CACHE_BYTES.toULong())
     }
 

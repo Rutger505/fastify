@@ -2,6 +2,7 @@ package com.rutger.fastify.diag
 
 import android.content.Context
 import android.util.Log
+import com.rutger.fastify.core.LogSink
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -9,10 +10,11 @@ import java.util.concurrent.Executors
 
 /**
  * Logcat + a small rotating file, so logs from earlier runs (and crashes) survive restarts and
- * can be shared from the app. Rust logs go to logcat (tag fastify-core) and are added on share.
+ * can be shared from the app. Rust logs go to logcat (tag fastify-core) and, through
+ * [CoreSink], into the same file.
  */
 object AppLog {
-    private const val MAX_BYTES = 512 * 1024
+    private const val MAX_BYTES = 1024 * 1024
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "fastify-log").apply { isDaemon = true } }
     private val time = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS")
     @Volatile private var file: File? = null
@@ -45,6 +47,12 @@ object AppLog {
     fun e(tag: String, msg: String, e: Throwable? = null) {
         Log.e("Fastify/$tag", msg, e)
         async("E", tag, msg + (e?.let { "\n" + Log.getStackTraceString(it) } ?: ""))
+    }
+
+    /** Rust core lines: file only (the core writes logcat itself). Tag: core/<module>. */
+    object CoreSink : LogSink {
+        override fun log(level: String, target: String, message: String) =
+            async(level, "core/" + target.removePrefix("fastify_core::"), message)
     }
 
     private fun async(level: String, tag: String, msg: String) {
