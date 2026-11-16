@@ -82,6 +82,10 @@ pub struct RemoteState {
     pub devices: Vec<RemoteDevice>,
     /// Device currently owning playback, None when nothing is active (or it's us).
     pub active_device_id: Option<String>,
+    /// This phone is the active device: the cluster names it, or the server confirmed our
+    /// activation and no other device took over since (survives blips like "active none" while
+    /// the old device disappears).
+    pub active_is_me: bool,
     pub track: Option<RemoteTrack>,
     pub is_playing: bool,
     /// Position at position_at_ms (local epoch ms). Extrapolate while is_playing.
@@ -296,6 +300,11 @@ impl Shared {
             log::info!("cluster ({why}): {summary}");
             *last = summary;
         }
+    }
+
+    /// The server confirmed us as active device and nobody took over since.
+    fn confirmed(&self) -> bool {
+        matches!(*self.activity.lock().unwrap(), Activity::Confirmed { .. })
     }
 
     /// Cluster from the server (push or PUT response): confirm our activation, or notice that
@@ -568,8 +577,8 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
                         }
                     }
                     sh.cluster_active_me.store(c.active_device_id == me, Ordering::Relaxed);
-                    publish(&sh.remote, c, &me);
                     sh.on_cluster(c, &me);
+                    publish(&sh.remote, c, &me, sh.confirmed());
                     // Like spirc: another device changed the cluster while we're active, PUT our
                     // state again, else their view of our position drifts. Not for our own PUTs.
                     if c.active_device_id == me && upd.devices_that_changed.iter().any(|d| *d != me) {
@@ -675,8 +684,8 @@ async fn put(session: &Session, sh: &Arc<Shared>, reason: PutStateReason) -> Res
     let cluster = Cluster::parse_from_bytes(&bytes).map_err(CoreError::other)?;
     let me = session.device_id();
     sh.note_cluster(&cluster, me, &format!("put {reason:?}"));
-    publish(&sh.remote, &cluster, me);
     sh.on_cluster(&cluster, me);
+    publish(&sh.remote, &cluster, me, sh.confirmed());
     Ok(())
 }
 
@@ -1154,7 +1163,7 @@ fn cluster_summary(c: &Cluster, me: &str) -> String {
     format!("active {active}: {state}; devices: {}", devices.join(", "))
 }
 
-fn publish(tx: &watch::Sender<RemoteState>, c: &Cluster, me: &str) {
+fn publish(tx: &watch::Sender<RemoteState>, c: &Cluster, me: &str, confirmed: bool) {
     let mut devices: Vec<RemoteDevice> = c
         .device
         .iter()
@@ -1173,6 +1182,7 @@ fn publish(tx: &watch::Sender<RemoteState>, c: &Cluster, me: &str) {
         ready: true,
         devices,
         active_device_id: active.clone(),
+        active_is_me: c.active_device_id == me || (c.active_device_id.is_empty() && confirmed),
         ..Default::default()
     };
     if let (Some(_), Some(p)) = (active, c.player_state.as_ref()) {

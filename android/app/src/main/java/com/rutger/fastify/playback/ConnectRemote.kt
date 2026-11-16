@@ -51,8 +51,6 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
     private val _switching = MutableStateFlow<Switch?>(null)
     /** Transfer in progress, for instant feedback while the server and devices catch up. */
     val switching: StateFlow<Switch?> = _switching
-    /** This phone's Connect device id, once known (a switch to the phone ends when it's active). */
-    @Volatile private var meId: String? = null
     private var switchTimeout: Job? = null
 
     @Volatile private var error: String? = null
@@ -124,11 +122,13 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         return if (d > 0) pos.coerceIn(0, d) else pos.coerceAtLeast(0)
     }
 
-    private suspend fun onState(s: RemoteState) {
+    private fun onState(s: RemoteState) {
         _state.value = s
         decide()
         render()
-        hydrate(s)
+        // Not inline: a slow metadata fetch would hold up the watcher, which then skips states
+        // (e.g. a short "active me" between two cluster updates).
+        scope.launch { hydrate(s) }
     }
 
     /** The phone's own playback changed (paused by a takeover, started, cleared). */
@@ -141,7 +141,8 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         val s = _state.value ?: return
         val active = s.activeDeviceId
         _switching.value?.let { sw ->
-            val done = if (sw.to != null) active == sw.to else (active != null && active == meId) || local().isPlaying
+            // activeDeviceId is never the phone itself (null then): use activeIsMe.
+            val done = if (sw.to != null) active == sw.to else s.activeIsMe || local().isPlaying
             if (done) endSwitch()
         }
         expect?.let { (device, until) ->
@@ -323,7 +324,7 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
                 }
             }
             runCatching {
-                val me = core().connectDeviceId().also { meId = it }
+                val me = core().connectDeviceId()
                 core().connectTransfer(from ?: me, to ?: me)
             }
                 .onSuccess {
