@@ -354,6 +354,12 @@ impl FastifyCore {
         self.connect.activate();
     }
 
+    /// Connect device `name` (re)connected at most `within_ms` ago and we're still the active
+    /// device (audio focus guard: the phone's own Spotify app woke up in the background).
+    pub fn connect_woke_while_active(&self, name: String, within_ms: u64) -> bool {
+        self.connect.woke_while_active(&name, within_ms)
+    }
+
     /// Nothing loaded any more: stop being the active device.
     pub fn connect_deactivate(&self) {
         self.connect.deactivate();

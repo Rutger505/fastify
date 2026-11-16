@@ -3,9 +3,11 @@ package com.rutger.fastify.playback
 import android.content.Context
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.Player
+import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.diag.AppLog
 
 /**
@@ -13,9 +15,17 @@ import com.rutger.fastify.diag.AppLog
  * The official Spotify app does this when Android starts it in the background: it grabs focus,
  * stays silent, and Fastify would stay paused. A real takeover (any app playing audio within
  * [WINDOW_MS], a call, a recording) or any play/pause by the user keeps the pause.
+ * When the phone's own Spotify app (Connect device named [Build.MODEL]) just connected and Fastify
+ * is still the active Connect device, resume right away instead of after [WINDOW_MS]: a real
+ * takeover by that app would have made it the active device (Android fades Fastify out for ~2 s
+ * before the loss arrives, so the cluster update is in by then).
  * Max [MAX_RESUMES] auto-resumes per [RESUME_PERIOD_MS] so a focus fight can't loop.
  */
-class FocusGuard(context: Context, private val player: Player) {
+class FocusGuard(
+    context: Context,
+    private val player: Player,
+    private val core: () -> FastifyCore,
+) {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private var armed = false
@@ -48,8 +58,16 @@ class FocusGuard(context: Context, private val player: Player) {
     private fun arm() {
         armed = true
         main.removeCallbacks(check)
-        main.postDelayed(check, WINDOW_MS)
-        AppLog.i(TAG, "focus guard: resume in ${WINDOW_MS / 1000}s unless another app plays audio")
+        val woke = runCatching { core().connectWokeWhileActive(Build.MODEL, WOKE_WINDOW_MS.toULong()) }
+            .onFailure { AppLog.w(TAG, "focus guard: Connect check failed: $it") }
+            .getOrDefault(false)
+        if (woke) {
+            AppLog.i(TAG, "focus guard: Spotify app on this phone (${Build.MODEL}) just connected, we're still active: resume now unless another app plays audio")
+            main.post(check)
+        } else {
+            main.postDelayed(check, WINDOW_MS)
+            AppLog.i(TAG, "focus guard: resume in ${WINDOW_MS / 1000}s unless another app plays audio")
+        }
     }
 
     private fun disarm(why: String?) {
@@ -80,13 +98,15 @@ class FocusGuard(context: Context, private val player: Player) {
             return@Runnable
         }
         resumes.addLast(now)
-        AppLog.w(TAG, "AUTO-RESUME: focus was taken but no app played audio for ${WINDOW_MS / 1000}s")
+        AppLog.w(TAG, "AUTO-RESUME: focus was taken but no app plays audio")
         player.play()
     }
 
     private companion object {
         const val TAG = "Playback"
         const val WINDOW_MS = 4_000L
+        /** Loss came 2.3 s after the Spotify app connected (system fade-out in between). */
+        const val WOKE_WINDOW_MS = 10_000L
         const val MAX_RESUMES = 3
         const val RESUME_PERIOD_MS = 10 * 60_000L
     }

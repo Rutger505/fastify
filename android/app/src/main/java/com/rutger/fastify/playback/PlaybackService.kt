@@ -71,7 +71,7 @@ class PlaybackService : MediaSessionService() {
         player.setShuffleOrder(AppendingShuffleOrder(0))
         player.addListener(PlayerEvents())
         playbackLog = PlaybackLog(this, player).also { it.start() }
-        focusGuard = FocusGuard(this, player).also { it.start() }
+        focusGuard = FocusGuard(this, player) { c.core }.also { it.start() }
 
         session = MediaSession.Builder(this, JamAwarePlayer(player, c.jam, ::caller))
             .setCallback(SessionCallback())

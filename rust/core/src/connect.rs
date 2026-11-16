@@ -22,7 +22,7 @@ use librespot_core::dealer::manager::{Reply, RequestReply};
 use librespot_core::dealer::protocol::{Command, Message, PayloadValue, PlayCommand, Request};
 use librespot_core::{Session, version};
 use librespot_protocol::connect::{
-    Capabilities, Cluster, ClusterUpdate, Device, DeviceInfo, MemberType, PutStateReason,
+    Capabilities, Cluster, ClusterUpdate, ClusterUpdateReason, Device, DeviceInfo, MemberType, PutStateReason,
     PutStateRequest, SetVolumeCommand,
 };
 use librespot_protocol::player::{ContextPlayerOptions, PlayOrigin, PlayerState, ProvidedTrack};
@@ -235,6 +235,10 @@ struct Shared {
     jam_version: watch::Sender<(u64, String)>,
     /// Last logged [cluster_summary]: log only changes.
     last_cluster: Mutex<String>,
+    /// Device name -> epoch ms it last (re)connected (NEW_DEVICE_APPEARED/DEVICE_NEW_CONNECTION).
+    connected_at: Mutex<HashMap<String, u64>>,
+    /// The last cluster named us the active device.
+    cluster_active_me: AtomicBool,
 }
 
 impl Shared {
@@ -368,6 +372,8 @@ impl Hub {
                 kick: Notify::new(),
                 jam_version: watch::channel((0, String::new())).0,
                 last_cluster: Mutex::new(String::new()),
+                connected_at: Mutex::new(HashMap::new()),
+                cluster_active_me: AtomicBool::new(false),
             }),
             task: Mutex::new(None),
         }
@@ -424,6 +430,15 @@ impl Hub {
 
     pub fn activate(&self) {
         self.sh.activate();
+    }
+
+    /// Device `name` (re)connected to Connect at most `within_ms` ago while we're still the
+    /// active device: e.g. Android starting the phone's own Spotify app in the background.
+    pub fn woke_while_active(&self, name: &str, within_ms: u64) -> bool {
+        let at = self.sh.connected_at.lock().unwrap().get(name).copied();
+        at.is_some_and(|t| now_ms().saturating_sub(t) <= within_ms)
+            && self.sh.cluster_active_me.load(Ordering::Relaxed)
+            && *self.sh.activity.lock().unwrap() != Activity::Inactive
     }
 
     pub fn deactivate(&self) {
@@ -544,7 +559,15 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
                     let changed: Vec<&str> = upd.devices_that_changed.iter()
                         .map(|d| if *d == me { "me" } else { c.device.get(d).map_or(d.as_str(), |i| i.name.as_str()) })
                         .collect();
-                    sh.note_cluster(c, &me, &format!("{:?} by {}", upd.update_reason.enum_value_or_default(), changed.join(", ")));
+                    let reason = upd.update_reason.enum_value_or_default();
+                    sh.note_cluster(c, &me, &format!("{reason:?} by {}", changed.join(", ")));
+                    if matches!(reason, ClusterUpdateReason::DEVICE_NEW_CONNECTION | ClusterUpdateReason::NEW_DEVICE_APPEARED) {
+                        let mut at = sh.connected_at.lock().unwrap();
+                        for d in upd.devices_that_changed.iter().filter(|d| **d != me) {
+                            if let Some(i) = c.device.get(d) { at.insert(i.name.clone(), now_ms()); }
+                        }
+                    }
+                    sh.cluster_active_me.store(c.active_device_id == me, Ordering::Relaxed);
                     publish(&sh.remote, c, &me);
                     sh.on_cluster(c, &me);
                     // Like spirc: another device changed the cluster while we're active, PUT our
