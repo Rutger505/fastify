@@ -73,6 +73,22 @@ class PlaybackLog(context: Context, private val player: Player) {
             AppLog.i(TAG, "state ${stateName(playbackState)}: ${state()}")
         }
 
+        /** Seeks and jumps (also the player's own, e.g. after an Ogg seek) with where it came from. */
+        override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
+            if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) return
+            val why = when (reason) {
+                Player.DISCONTINUITY_REASON_SEEK -> "seek"
+                Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT -> "seek adjustment"
+                Player.DISCONTINUITY_REASON_SKIP -> "skip"
+                Player.DISCONTINUITY_REASON_REMOVE -> "remove"
+                Player.DISCONTINUITY_REASON_INTERNAL -> "internal"
+                Player.DISCONTINUITY_REASON_SILENCE_SKIP -> "silence skip"
+                else -> "reason $reason"
+            }
+            val item = if (old.mediaItemIndex != new.mediaItemIndex) ", item ${old.mediaItemIndex} -> ${new.mediaItemIndex}" else ""
+            AppLog.i(TAG, "position ${old.positionMs} -> ${new.positionMs} ms ($why$item); ${state()}")
+        }
+
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val why = when (reason) {
                 Player.MEDIA_ITEM_TRANSITION_REASON_AUTO -> "auto"

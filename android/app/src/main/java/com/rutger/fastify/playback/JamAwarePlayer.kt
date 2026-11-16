@@ -34,6 +34,7 @@ class JamAwarePlayer(
     override fun seekToPreviousMediaItem() { if (!jam.redirect(RemoteCommand.SkipPrev)) super.seekToPreviousMediaItem() }
 
     override fun seekTo(positionMs: Long) {
+        AppLog.i(TAG, "seek to ${positionMs / 1000}s by ${caller()}")
         if (!jam.redirect(RemoteCommand.SeekTo(positionMs.coerceAtLeast(0).toULong()))) super.seekTo(positionMs)
     }
 

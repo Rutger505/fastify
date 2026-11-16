@@ -65,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,6 +77,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
@@ -85,6 +87,7 @@ import com.rutger.fastify.playback.PlayerUiState
 import com.rutger.fastify.ui.LocalNavigator
 import com.rutger.fastify.ui.theme.Green
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -92,6 +95,7 @@ import kotlin.math.abs
 @Composable
 fun MiniPlayer(state: PlayerUiState, player: PlayerConnection, onOpen: () -> Unit) {
     val track = state.current ?: return
+    val waited = waitingSeconds(state.waitingSinceMs)
     // Spotify-style: swipe the track info left for next, right for previous; play/pause on the far right.
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
         Row(
@@ -110,13 +114,14 @@ fun MiniPlayer(state: PlayerUiState, player: PlayerConnection, onOpen: () -> Uni
                 }
             }
             IconButton(onClick = player::togglePlay) {
-                Icon(if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.isPlaying) "Pause" else "Play")
+                PlayPauseIcon(state, waited != null, 24.dp, 36.dp)
             }
         }
         val labelPad = Modifier.padding(start = 62.dp, bottom = 4.dp)
         when {
             state.switchingTo != null -> SwitchingLabel(state.switchingTo, labelPad)
             state.remoteDevice != null -> RemoteLabel(state.remoteDevice, labelPad)
+            waited != null -> WaitingLabel(waited, labelPad)
         }
         LinearProgressIndicator(
             progress = { if (state.durationMs > 0) state.positionMs.toFloat() / state.durationMs else 0f },
@@ -149,6 +154,36 @@ fun SwitchingLabel(device: String, modifier: Modifier = Modifier) {
     }
 }
 
+/** Seconds play has been waiting for audio data; null when not waiting or under [WAIT_SHOW_MS]. */
+@Composable
+fun waitingSeconds(sinceMs: Long): Long? {
+    val now by produceState(System.currentTimeMillis(), sinceMs) {
+        while (sinceMs > 0) {
+            value = System.currentTimeMillis()
+            delay(250)
+        }
+    }
+    val waited = now - sinceMs
+    return if (sinceMs > 0 && waited >= WAIT_SHOW_MS) waited / 1000 else null
+}
+
+/** Pause while play is on (also still buffering); a spinner rings it while waiting for audio. */
+@Composable
+fun PlayPauseIcon(state: PlayerUiState, waiting: Boolean, size: Dp, ring: Dp) {
+    val on = state.isPlaying || state.waitingSinceMs > 0
+    Box(contentAlignment = Alignment.Center) {
+        if (waiting) CircularProgressIndicator(Modifier.size(ring), color = LocalContentColor.current, strokeWidth = 2.dp)
+        Icon(if (on) Icons.Default.Pause else Icons.Default.PlayArrow, if (on) "Pause" else "Play", Modifier.size(size))
+    }
+}
+
+@Composable
+fun WaitingLabel(seconds: Long, modifier: Modifier = Modifier) {
+    Text("Buffering: waiting for audio data, ${seconds} s", modifier, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
+private const val WAIT_SHOW_MS = 1_000L
 private const val SWIPE_FRACTION = 0.3f
 private const val SWIPE_VELOCITY = 1500f
 private const val CLOSE_FRACTION = 0.25f
@@ -363,6 +398,8 @@ fun PlayerScreen(onClose: () -> Unit) {
             Spacer(Modifier.weight(1f))
             Text(formatTime(state.durationMs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        val waited = waitingSeconds(state.waitingSinceMs)
+        if (waited != null) WaitingLabel(waited)
         state.error?.let {
             androidx.compose.foundation.text.selection.SelectionContainer {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -381,8 +418,7 @@ fun PlayerScreen(onClose: () -> Unit) {
                 Icon(Icons.Default.SkipPrevious, "Previous", modifier = Modifier.size(36.dp))
             }
             FilledIconButton(onClick = player::togglePlay, modifier = Modifier.size(72.dp)) {
-                Icon(if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    if (state.isPlaying) "Pause" else "Play", modifier = Modifier.size(40.dp))
+                PlayPauseIcon(state, waited != null, 40.dp, 64.dp)
             }
             IconButton(onClick = player::next, modifier = Modifier.size(56.dp)) {
                 Icon(Icons.Default.SkipNext, "Next", modifier = Modifier.size(36.dp))

@@ -31,6 +31,8 @@ data class PlayerUiState(
     val current: Track? = null,
     val isPlaying: Boolean = false,
     val buffering: Boolean = false,
+    /** Epoch ms since which play is on but the player is buffering (no audio yet), 0 = not waiting. */
+    val waitingSinceMs: Long = 0,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val shuffle: Boolean = false,
@@ -152,7 +154,8 @@ class PlayerConnection(
 
     fun togglePlay() = if (remoteOn) remote.togglePlay() else withController {
         if (playbackState == Player.STATE_IDLE) prepare()
-        if (isPlaying) pause() else play()
+        // Buffering with play on counts as playing (UI shows pause): tapping pauses, no repeat play().
+        if (isPlaying || (playWhenReady && playbackState == Player.STATE_BUFFERING)) pause() else play()
     }
 
     fun next() = if (remoteOn) remote.next() else withController { seekToNext() }
@@ -265,6 +268,9 @@ class PlayerConnection(
             current = c.currentMediaItem?.toTrack(),
             isPlaying = c.isPlaying,
             buffering = c.playbackState == Player.STATE_BUFFERING,
+            waitingSinceMs = if (c.playWhenReady && c.playbackState == Player.STATE_BUFFERING) {
+                before.waitingSinceMs.takeIf { it > 0 } ?: System.currentTimeMillis()
+            } else 0,
             positionMs = c.currentPosition,
             durationMs = c.duration.takeIf { it > 0 } ?: (c.currentMediaItem?.mediaMetadata?.durationMs ?: 0),
             shuffle = c.shuffleModeEnabled,
