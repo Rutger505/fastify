@@ -73,6 +73,9 @@ import com.rutger.fastify.ui.screens.SearchScreen
 import kotlinx.serialization.json.Json
 
 private val navJson = Json { ignoreUnknownKeys = true }
+private const val COLLECTION_ROUTE = "collection?c={c}"
+/** savedStateHandle key on a collection entry: track to scroll to (set by [Navigator.openContext]). */
+private const val FOCUS_TRACK = "focusTrack"
 
 /** Full-screen routes that cover the app chrome (no mini player / bottom bar). */
 private val fullScreen = setOf("player", "lyrics")
@@ -81,6 +84,19 @@ private val fullScreen = setOf("player", "lyrics")
 class Navigator(private val nav: NavHostController) {
     fun openCollection(c: Collection) =
         go("collection?c=" + Uri.encode(navJson.encodeToString(Collection.serializer(), c)))
+
+    /**
+     * Player header: the playlist/album playback started from, with [trackId] scrolled to the middle.
+     * When that page is right under the player, just close the player and scroll there.
+     */
+    fun openContext(c: Collection, trackId: String?) {
+        val below = nav.previousBackStackEntry
+        val belowIsIt = nav.currentDestination?.route == "player" && below?.destination?.route == COLLECTION_ROUTE &&
+            below.arguments?.getString("c")?.let { runCatching { navJson.decodeFromString(Collection.serializer(), it) }.getOrNull() }
+                ?.cacheKey == c.cacheKey
+        if (belowIsIt) nav.popBackStack() else openCollection(c)
+        nav.currentBackStackEntry?.savedStateHandle?.set(FOCUS_TRACK, trackId)
+    }
 
     fun openArtist(id: String) = go("artist/$id")
     fun openNewReleases() = go("new")
@@ -233,11 +249,12 @@ fun FastifyNavHost() {
                 composable("shazam") { ShazamScreen(shazam) }
                 composable("new") { NewReleasesScreen() }
                 composable(
-                    "collection?c={c}",
+                    COLLECTION_ROUTE,
                     arguments = listOf(navArgument("c") { nullable = false }),
                 ) { backStack ->
                     val c = navJson.decodeFromString(Collection.serializer(), backStack.arguments?.getString("c")!!)
-                    CollectionScreen(c)
+                    val focus by backStack.savedStateHandle.getStateFlow<String?>(FOCUS_TRACK, null).collectAsStateWithLifecycle()
+                    CollectionScreen(c, focusTrackId = focus, onFocused = { backStack.savedStateHandle[FOCUS_TRACK] = null })
                 }
                 composable("artist/{id}") { backStack ->
                     ArtistScreen(backStack.arguments?.getString("id")!!)

@@ -4,7 +4,7 @@
 //!   fastify-probe <data-dir> run       # every library call the app makes
 //!   fastify-probe <data-dir> raw <path>  # raw spclient GET
 //!   fastify-probe <data-dir> artist|album|lyrics <id>
-//!   fastify-probe <data-dir> plcreate <name> | plrename <playlist> <name> | pladd <playlist> <track> | plrm <playlist> <track> <occurrence>
+//!   fastify-probe <data-dir> plcreate <name> | plrename <playlist> <name> | pladd <playlist> <track> | plrm <playlist> <track> <occurrence> | plrmall <playlist> <track> | plhas <pl1,pl2,..> <track>
 //!   fastify-probe <data-dir> like|unlike <track> | download <track>
 //!   fastify-probe <data-dir> target <name> [secs] [track]  # act as a Connect player, print commands
 //!     (PROBE_NO_ACTIVATE=1: refuse loads/resumes, never becomes the active device)
@@ -182,6 +182,8 @@ async fn main() {
         "plcreate" => println!("{:?}", core.clone().playlist_create(args[3].clone()).await.map_err(|e| e.to_string())),
         "plrename" => println!("{:?}", core.clone().playlist_rename(args[3].clone(), args[4].clone()).await.map_err(|e| e.to_string())),
         "pladd" => println!("{:?}", core.clone().playlist_add(args[3].clone(), vec![args[4].clone()]).await.map_err(|e| e.to_string())),
+        "plrmall" => println!("{:?}", core.clone().playlist_remove_all(args[3].clone(), args[4].clone()).await.map_err(|e| e.to_string())),
+        "plhas" => println!("{:?}", core.clone().playlists_containing(args[3].split(',').map(String::from).collect(), args[4].clone()).await.map_err(|e| e.to_string())),
         "plrm" => println!("{:?}", core.clone().playlist_remove(args[3].clone(), args[4].clone(), args[5].parse().unwrap()).await.map_err(|e| e.to_string())),
         "like" | "unlike" => println!("{:?}", core.clone().set_liked(vec![args[3].clone()], cmd == "like").await.map_err(|e| e.to_string())),
         "download" => {

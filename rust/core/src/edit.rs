@@ -136,20 +136,31 @@ pub async fn playlist_rename(session: &Session, playlist_id: &str, name: &str) -
     send_changes(session, playlist_id, list.revision, vec![op]).await
 }
 
-/// Append tracks to the end of a playlist.
+/// Append tracks to the end of a playlist, skipping ones already in it (no duplicates).
+/// Returns how many were added.
 pub async fn playlist_add(
     session: &Session,
     playlist_id: &str,
     track_ids: &[String],
-) -> Result<(), CoreError> {
+) -> Result<u32, CoreError> {
     let list = fetch_list(session, playlist_id).await?;
-    let items = track_ids
+    let present: std::collections::HashSet<&str> =
+        list.contents.items.iter().map(|i| i.uri()).collect();
+    let mut seen = std::collections::HashSet::new();
+    let items: Vec<Item> = track_ids
         .iter()
-        .map(|id| Item {
-            uri: Some(format!("spotify:track:{id}")),
+        .map(|id| format!("spotify:track:{id}"))
+        .filter(|uri| !present.contains(uri.as_str()) && seen.insert(uri.clone()))
+        .map(|uri| Item {
+            uri: Some(uri),
             ..Default::default()
         })
         .collect();
+    if items.is_empty() {
+        log::info!("add to {playlist_id}: all {} already in it", track_ids.len());
+        return Ok(0);
+    }
+    let added = items.len() as u32;
     let op = Op {
         kind: Some(EnumOrUnknown::new(op::Kind::ADD)),
         add: MessageField::some(Add {
@@ -160,8 +171,70 @@ pub async fn playlist_add(
         ..Default::default()
     };
     send_changes(session, playlist_id, list.revision, vec![op]).await?;
-    log::info!("added {} tracks to {playlist_id}", track_ids.len());
-    Ok(())
+    log::info!("added {added} tracks to {playlist_id}");
+    Ok(added)
+}
+
+/// Remove every copy of a track from a playlist. Returns how many rows were removed.
+pub async fn playlist_remove_all(
+    session: &Session,
+    playlist_id: &str,
+    track_id: &str,
+) -> Result<u32, CoreError> {
+    let list = fetch_list(session, playlist_id).await?;
+    let uri = format!("spotify:track:{track_id}");
+    // Highest index first, so earlier removals don't shift later ones.
+    let ops: Vec<Op> = list
+        .contents
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| i.uri() == uri)
+        .rev()
+        .map(|(index, item)| Op {
+            kind: Some(EnumOrUnknown::new(op::Kind::REM)),
+            rem: MessageField::some(Rem {
+                from_index: Some(index as i32),
+                length: Some(1),
+                items: vec![item.clone()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .collect();
+    let removed = ops.len() as u32;
+    if removed > 0 {
+        send_changes(session, playlist_id, list.revision.clone(), ops).await?;
+    }
+    log::info!("removed {removed} copies of {uri} from {playlist_id}");
+    Ok(removed)
+}
+
+/// Which of `playlist_ids` contain the track (fresh from the server, fetched in parallel).
+/// Playlists that fail to load are left out and logged.
+pub async fn playlists_containing(
+    session: &Session,
+    playlist_ids: &[String],
+    track_id: &str,
+) -> Result<Vec<String>, CoreError> {
+    let uri = format!("spotify:track:{track_id}");
+    let mut set = tokio::task::JoinSet::new();
+    for id in playlist_ids {
+        let (session, id, uri) = (session.clone(), id.clone(), uri.clone());
+        set.spawn(async move {
+            let r = fetch_list(&session, &id).await;
+            (id, r.map(|l| l.contents.items.iter().any(|i| i.uri() == uri)))
+        });
+    }
+    let mut out = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined.map_err(CoreError::other)? {
+            (id, Ok(true)) => out.push(id),
+            (_, Ok(false)) => {}
+            (id, Err(e)) => log::warn!("membership of {id}: {e}"),
+        }
+    }
+    Ok(out)
 }
 
 /// Remove the occurrence-th (0-based) copy of a track from a playlist, like removing one row.

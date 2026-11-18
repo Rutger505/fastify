@@ -288,6 +288,27 @@ fun contextTitle(c: com.rutger.fastify.AppContainer, uri: String?, track: com.ru
         .firstOrNull { it.id == id }?.title ?: album
 }
 
+/**
+ * The page the header leads to: the playlist/album/Liked Songs playback started from; the track's
+ * album when there's no context. Null for artist contexts (see [contextArtistId]).
+ */
+fun contextCollection(c: com.rutger.fastify.AppContainer, uri: String?, track: com.rutger.fastify.data.Track?): com.rutger.fastify.data.Collection? {
+    uri ?: return track?.albumCollection()
+    if (uri.endsWith(":collection") || uri == "spotify:collection:tracks") return com.rutger.fastify.data.Collection.Liked
+    val id = uri.substringAfterLast(':')
+    val kind = when {
+        uri.startsWith("spotify:playlist:") -> com.rutger.fastify.data.CollectionKind.PLAYLIST
+        uri.startsWith("spotify:album:") -> com.rutger.fastify.data.CollectionKind.ALBUM
+        else -> return null
+    }
+    if (kind == com.rutger.fastify.data.CollectionKind.ALBUM && track?.albumId == id) return track.albumCollection()
+    val home = c.library.cachedHome()
+    return (home?.playlists.orEmpty() + home?.topSongs.orEmpty() + home?.albums.orEmpty()).firstOrNull { it.id == id && it.kind == kind }
+        ?: com.rutger.fastify.data.Collection(kind, id, contextTitle(c, uri, track), "", null)
+}
+
+private fun contextArtistId(uri: String?): String? = uri?.takeIf { it.startsWith("spotify:artist:") }?.substringAfterLast(':')
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(onClose: () -> Unit) {
@@ -339,7 +360,13 @@ fun PlayerScreen(onClose: () -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f),
+                // Tap: go to where playback started, scrolled to this track.
+                modifier = Modifier.weight(1f).clickable(enabled = track != null) {
+                    val uri = state.contextUri
+                    val artist = contextArtistId(uri)
+                    if (artist != null) nav.openArtist(artist)
+                    else contextCollection(c, uri, track)?.let { nav.openContext(it, track?.id) }
+                }.padding(vertical = 8.dp),
             )
             IconButton(onClick = { track?.let { menu = TrackMenu(it, inPlayer = true) } }) {
                 Icon(Icons.Default.MoreVert, "More options")

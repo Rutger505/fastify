@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -62,7 +63,7 @@ private data class ShownRow(val track: Track, val occurrence: Int)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CollectionScreen(collection: Collection) {
+fun CollectionScreen(collection: Collection, focusTrackId: String? = null, onFocused: () -> Unit = {}) {
     val c = LocalContext.current.container
     val nav = LocalNavigator.current
     val vm = viewModel(key = collection.cacheKey) { CollectionViewModel(c.library, c.downloads, collection) }
@@ -101,8 +102,24 @@ fun CollectionScreen(collection: Collection) {
     }
     val coverImages = playlistArtwork ?: tracks.take(4).map { it.imageUrl }
 
+    val listState = rememberLazyListState()
+    // Items above the track rows: cover, search, controls, plus the conditional ones below.
+    val leadingItems = 3 + (if (state.error != null) 1 else 0) + (if (state.data == null && state.refreshing) 1 else 0) +
+        (if (query.isNotBlank() && shown.isEmpty() && state.data != null) 1 else 0)
+    // Opened from the player header: center the playing track once its row exists (cached or fresh list).
+    LaunchedEffect(focusTrackId, shown) {
+        val id = focusTrackId ?: return@LaunchedEffect
+        val index = shown.indexOfFirst { it.track.id == id }
+        if (index < 0) {
+            if (state.data != null && !state.refreshing) onFocused() // not in this list: give up
+            return@LaunchedEffect
+        }
+        listState.centerItem(leadingItems + index)
+        onFocused()
+    }
+
     PullToRefreshBox(isRefreshing = state.refreshing && state.data != null, onRefresh = vm::refresh, modifier = Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
             item {
                 Row(Modifier.fillMaxWidth().padding(end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { nav.back() }, modifier = Modifier.padding(4.dp)) {

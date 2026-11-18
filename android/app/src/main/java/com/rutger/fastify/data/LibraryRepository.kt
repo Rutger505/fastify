@@ -134,9 +134,29 @@ class LibraryRepository(
     fun editablePlaylists(username: String?): List<Collection> =
         cachedHome()?.playlists.orEmpty().filter { username == null || it.owner == null || it.owner == username }
 
-    suspend fun addToPlaylist(playlist: Collection, track: Track) = withContext(Dispatchers.IO) {
-        timed("add ${track.id} to ${playlist.id}") { core().playlistAdd(playlist.id, listOf(track.id)) }
-        cachedTracks(playlist)?.let { updateSnapshot(playlist.cacheKey, it + track) }
+    /** Adds the track unless it's already in the playlist (checked server-side). Returns whether it was added. */
+    suspend fun addToPlaylist(playlist: Collection, track: Track): Boolean = withContext(Dispatchers.IO) {
+        val added = timed("add ${track.id} to ${playlist.id}") { core().playlistAdd(playlist.id, listOf(track.id)) } > 0u
+        cachedTracks(playlist)?.let { list -> if (list.none { it.id == track.id }) updateSnapshot(playlist.cacheKey, list + track) }
+        added
+    }
+
+    /** Removes every copy of the track. Returns how many rows were removed. */
+    suspend fun removeAllFromPlaylist(playlist: Collection, track: Track): Int = withContext(Dispatchers.IO) {
+        val removed = timed("remove all ${track.id} from ${playlist.id}") { core().playlistRemoveAll(playlist.id, track.id) }
+        cachedTracks(playlist)?.let { list -> if (list.any { it.id == track.id }) updateSnapshot(playlist.cacheKey, list.filter { it.id != track.id }) }
+        removed.toInt()
+    }
+
+    /** Ids of [playlists] whose cached snapshot contains the track (instant, may be stale or missing). */
+    fun cachedPlaylistsContaining(playlists: List<Collection>, track: Track): Set<String> =
+        playlists.filterTo(mutableListOf()) { p -> cachedTracks(p)?.any { it.id == track.id } == true }.mapTo(HashSet()) { it.id }
+
+    /** Ids of [playlists] that contain the track, fresh from Spotify. */
+    suspend fun playlistsContaining(playlists: List<Collection>, track: Track): Set<String> = withContext(Dispatchers.IO) {
+        timed("membership ${track.id} in ${playlists.size} playlists") {
+            core().playlistsContaining(playlists.map { it.id }, track.id)
+        }.toHashSet()
     }
 
     /** Remove one row: the [occurrence]-th copy of the track in the playlist as shown. */

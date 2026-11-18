@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -285,6 +286,7 @@ fun CollectionRow(
     c: Collection,
     downloaded: Boolean = false,
     playlistArtwork: List<String?>? = null,
+    trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -312,6 +314,7 @@ fun CollectionRow(
                 }
             }
         }
+        trailing?.invoke()
     }
 }
 
@@ -356,4 +359,13 @@ fun SectionHeader(text: String, onClick: (() -> Unit)? = null) {
 fun formatTime(ms: Long): String {
     val s = (ms / 1000).coerceAtLeast(0)
     return "%d:%02d".format(s / 60, s % 60)
+}
+
+/** Scrolls item [index] to the middle of the viewport (or as close as the list ends allow). */
+suspend fun androidx.compose.foundation.lazy.LazyListState.centerItem(index: Int) {
+    scrollToItem(index)
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    val viewportCenter = (info.viewportStartOffset + info.viewportEndOffset) / 2
+    scrollBy((item.offset + item.size / 2 - viewportCenter).toFloat())
 }

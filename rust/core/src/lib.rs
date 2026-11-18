@@ -500,9 +500,33 @@ impl FastifyCore {
         self: Arc<Self>,
         playlist_id: String,
         track_ids: Vec<String>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<u32, CoreError> {
         self.with_session(|s| async move { edit::playlist_add(&s, &playlist_id, &track_ids).await })
             .await
+    }
+
+    /// Remove every copy of the track. Returns how many rows were removed.
+    pub async fn playlist_remove_all(
+        self: Arc<Self>,
+        playlist_id: String,
+        track_id: String,
+    ) -> Result<u32, CoreError> {
+        self.with_session(move |s| async move {
+            edit::playlist_remove_all(&s, &playlist_id, &track_id).await
+        })
+        .await
+    }
+
+    /// Which of the playlists contain the track, fresh from the server.
+    pub async fn playlists_containing(
+        self: Arc<Self>,
+        playlist_ids: Vec<String>,
+        track_id: String,
+    ) -> Result<Vec<String>, CoreError> {
+        self.with_session(move |s| async move {
+            edit::playlists_containing(&s, &playlist_ids, &track_id).await
+        })
+        .await
     }
 
     /// Remove one row: the `occurrence`-th copy (0-based) of the track in the playlist.

@@ -17,7 +17,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Lyrics
@@ -83,17 +85,20 @@ private enum class MenuPage { Main, AddToPlaylist, Artists }
 fun Context.toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
 /** Runs a library write in the app scope (survives the sheet closing) and reports the result. */
-private fun AppContainer.write(context: Context, what: String, done: String, block: suspend () -> Unit) {
+private fun AppContainer.write(context: Context, what: String, done: String, block: suspend () -> Unit) =
+    writeReporting(context, what) { block(); done }
+
+/** Like [write], but [block] returns the message to show. */
+private fun AppContainer.writeReporting(context: Context, what: String, block: suspend () -> String) {
     scope.launch {
-        val error = try {
+        val msg = try {
             block()
-            null
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             AppLog.w("Edit", "$what failed", e)
             "$what failed: ${e.javaClass.simpleName}: ${e.message}"
         }
-        withContext(Dispatchers.Main) { context.toast(error ?: done) }
+        withContext(Dispatchers.Main) { context.toast(msg) }
     }
 }
 
@@ -225,10 +230,37 @@ fun TrackMenuSheet(menu: TrackMenu, onDismiss: () -> Unit) {
             MenuPage.AddToPlaylist -> {
                 SheetTitle("Add to playlist")
                 val playlists = remember(username) { c.library.editablePlaylists(username) }
+                // Which playlists already have the track: cached snapshots first, then Spotify's truth.
+                // Tapping one that has it removes it (every copy), so a track is never added twice.
+                var containing by remember { mutableStateOf<Set<String>>(emptySet()) }
+                var checkError by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(track.id, playlists) {
+                    containing = withContext(Dispatchers.IO) { c.library.cachedPlaylistsContaining(playlists, track) }
+                    try {
+                        containing = c.library.playlistsContaining(playlists, track)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        AppLog.w("Edit", "playlist membership check failed", e)
+                        checkError = "Membership check failed: ${e.javaClass.simpleName}: ${e.message}"
+                    }
+                }
+                checkError?.let { Text(it, modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 LazyColumn(Modifier.fillMaxWidth().height(420.dp)) {
                     items(playlists, key = { it.id }) { p ->
-                        CollectionRow(p) {
-                            c.write(context, "Add", "Added to ${p.title}") { c.library.addToPlaylist(p, track) }
+                        val inIt = p.id in containing
+                        CollectionRow(p, trailing = {
+                            if (inIt) Icon(Icons.Default.CheckCircle, "In playlist, tap to remove", tint = Green)
+                            else Icon(Icons.Default.AddCircleOutline, "Not in playlist, tap to add", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }) {
+                            if (inIt) {
+                                c.writeReporting(context, "Remove") {
+                                    if (c.library.removeAllFromPlaylist(p, track) > 0) "Removed from ${p.title}" else "Wasn't in ${p.title}"
+                                }
+                            } else {
+                                c.writeReporting(context, "Add") {
+                                    if (c.library.addToPlaylist(p, track)) "Added to ${p.title}" else "Already in ${p.title}"
+                                }
+                            }
                             close()
                         }
                     }
