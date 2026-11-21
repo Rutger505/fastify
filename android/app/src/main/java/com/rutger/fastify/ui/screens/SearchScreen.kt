@@ -122,8 +122,10 @@ fun SearchScreen() {
         if (results != null) {
             // A few songs first, then the album/playlist shelves, then the rest of the songs.
             val songs = results.tracks.withIndex().toList()
-            val songRow: @Composable (IndexedValue<Track>) -> Unit = { (i, t) ->
-                TrackRow(t, playing = playerState.current?.id == t.id, onClick = { saveQuery(); c.player.play(results.tracks, i) },
+            // Tapping a song plays just that song; autoplay (seeded by it) fills the queue with
+            // Spotify's recommendations, like the Spotify app, instead of the other search results.
+            val songRow: @Composable (IndexedValue<Track>) -> Unit = { (_, t) ->
+                TrackRow(t, playing = playerState.current?.id == t.id, onClick = { saveQuery(); c.player.play(listOf(t), 0) },
                     downloaded = t.id in downloaded, onMore = { menu = TrackMenu(t) }, onSwipeQueue = { c.player.addToQueue(t) })
             }
             val open = { col: Collection -> saveQuery(); onOpen(col) }
