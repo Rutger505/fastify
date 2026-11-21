@@ -20,7 +20,17 @@ import com.rutger.fastify.diag.AppLog
 class PlaybackLog(context: Context, private val player: Player) {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val main = Handler(Looper.getMainLooper())
-    private var lastPlayers = ""
+    /** Audio players last logged / last seen (they come and go for a few ms on every track). */
+    private var loggedPlayers = ""
+    private var seenPlayers = ""
+    private val logPlayers = Runnable {
+        if (seenPlayers != loggedPlayers) {
+            loggedPlayers = seenPlayers
+            AppLog.i(TAG, "audio players (all apps): ${seenPlayers.ifEmpty { "none" }}")
+        }
+    }
+    private var suppressedAt = 0L
+    private var bufferingAt = 0L
 
     fun start() {
         player.addListener(listener)
@@ -36,6 +46,7 @@ class PlaybackLog(context: Context, private val player: Player) {
         audio.unregisterAudioPlaybackCallback(playbackCallback)
         audio.unregisterAudioDeviceCallback(deviceCallback)
         audio.removeOnModeChangedListener(modeListener)
+        main.removeCallbacks(logPlayers)
     }
 
     private fun state(): String {
@@ -66,11 +77,29 @@ class PlaybackLog(context: Context, private val player: Player) {
                 Player.PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT -> "unsuitable audio output"
                 else -> "reason $reason"
             }
-            AppLog.i(TAG, "suppression: $why")
+            // Short ones (notification sounds ducking us) only in logcat.
+            if (reason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) {
+                suppressedAt = System.currentTimeMillis()
+                AppLog.d(TAG, "suppression: $why")
+                return
+            }
+            val ms = System.currentTimeMillis() - suppressedAt
+            if (ms >= SUPPRESSED_LONG_MS) AppLog.i(TAG, "suppressed for $ms ms (ended)") else AppLog.d(TAG, "suppression ended after $ms ms")
         }
 
+        /** Buffering -> ready within a second (every track start, seek) only in logcat. */
         override fun onPlaybackStateChanged(playbackState: Int) {
-            AppLog.i(TAG, "state ${stateName(playbackState)}: ${state()}")
+            val now = System.currentTimeMillis()
+            when (playbackState) {
+                Player.STATE_BUFFERING -> { bufferingAt = now; AppLog.d(TAG, "state buffering: ${state()}") }
+                Player.STATE_READY -> {
+                    val ms = now - bufferingAt
+                    if (bufferingAt > 0 && ms >= LONG_MS && player.playWhenReady) AppLog.i(TAG, "ready after buffering $ms ms: ${state()}")
+                    else AppLog.d(TAG, "state ready: ${state()}")
+                    bufferingAt = 0
+                }
+                else -> AppLog.i(TAG, "state ${stateName(playbackState)}: ${state()}")
+            }
         }
 
         /** Seeks and jumps (also the player's own, e.g. after an Ogg seek) with where it came from. */
@@ -86,7 +115,9 @@ class PlaybackLog(context: Context, private val player: Player) {
                 else -> "reason $reason"
             }
             val item = if (old.mediaItemIndex != new.mediaItemIndex) ", item ${old.mediaItemIndex} -> ${new.mediaItemIndex}" else ""
-            AppLog.i(TAG, "position ${old.positionMs} -> ${new.positionMs} ms ($why$item); ${state()}")
+            val line = "position ${old.positionMs} -> ${new.positionMs} ms ($why$item); ${state()}"
+            // Track changes have their own line; adjustments follow every seek.
+            if (reason == Player.DISCONTINUITY_REASON_SEEK && item.isEmpty()) AppLog.i(TAG, line) else AppLog.d(TAG, line)
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -101,13 +132,19 @@ class PlaybackLog(context: Context, private val player: Player) {
         }
     }
 
-    /** Active players of all apps: when another one appears right before a pause, it took focus. */
+    /**
+     * Active players of all apps: when another one appears right before a pause, it took focus.
+     * Logged once the set is stable for [PLAYERS_STABLE_MS] and differs from the last logged one
+     * (ExoPlayer's own come and go on every track change).
+     */
     private val playbackCallback = object : AudioManager.AudioPlaybackCallback() {
         override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>) {
-            val players = configs.joinToString { usageName(it.audioAttributes.usage) }
-            if (players == lastPlayers) return
-            lastPlayers = players
-            AppLog.i(TAG, "audio players (all apps, ${configs.size}): ${players.ifEmpty { "none" }}")
+            val players = configs.map { usageName(it.audioAttributes.usage) }.sorted().joinToString()
+            if (players == seenPlayers) return
+            seenPlayers = players
+            AppLog.d(TAG, "audio players (all apps): ${players.ifEmpty { "none" }}")
+            main.removeCallbacks(logPlayers)
+            main.postDelayed(logPlayers, PLAYERS_STABLE_MS)
         }
     }
 
@@ -136,6 +173,10 @@ class PlaybackLog(context: Context, private val player: Player) {
 
     private companion object {
         const val TAG = "Playback"
+        /** Shorter buffering / suppression (notification sounds ducking us): logcat only. */
+        const val LONG_MS = 1_000L
+        const val SUPPRESSED_LONG_MS = 10_000L
+        const val PLAYERS_STABLE_MS = 2_000L
 
         fun stateName(state: Int) = when (state) {
             Player.STATE_IDLE -> "idle"

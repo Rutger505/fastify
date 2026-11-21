@@ -83,7 +83,7 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
                     }
                     .onFailure { e ->
                         if (e is CancellationException) throw e
-                        AppLog.w(TAG, "watch failed", e)
+                        AppLog.w(TAG, "watch failed", e, repeated = true)
                         delay(2_000L shl failures.coerceAtMost(4))
                         failures++
                     }
@@ -186,11 +186,17 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
             val result = runCatching { action() }
             if (request != generation.get()) return@launch
             result.onSuccess { jam ->
+                val was = _state.value.jam
+                if (was?.sessionId != jam?.sessionId) {
+                    AppLog.i(TAG, if (jam == null) "left Jam ${was?.sessionId} ($label)" else
+                        "in Jam ${jam.sessionId} ($label): host ${jam.hostName} on ${jam.hostDeviceName}, " +
+                            "${if (jam.isHost) "we host" else "guest"}, ${if (jam.listeningHere) "listening here" else "controlling"}, ${jam.members.size} members")
+                }
                 // A finished join/start replaces the invite view with the Jam.
                 _state.value = JamUiState(jam = jam, loaded = true)
             }.onFailure { e ->
                 if (e is CancellationException) throw e
-                AppLog.w(TAG, "$label failed", e)
+                AppLog.w(TAG, "$label failed", e, repeated = quiet)
                 _state.value = _state.value.copy(busy = false, loaded = true, error = if (quiet && !_sheet.value) null else "$label: ${describe(e)}")
             }
         }

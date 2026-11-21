@@ -28,15 +28,18 @@ class JamAwarePlayer(
     }
 
 
-    override fun seekToNext() { if (!jam.redirect(RemoteCommand.SkipNext)) super.seekToNext() }
-    override fun seekToNextMediaItem() { if (!jam.redirect(RemoteCommand.SkipNext)) super.seekToNextMediaItem() }
-    override fun seekToPrevious() { if (!jam.redirect(RemoteCommand.SkipPrev)) super.seekToPrevious() }
-    override fun seekToPreviousMediaItem() { if (!jam.redirect(RemoteCommand.SkipPrev)) super.seekToPreviousMediaItem() }
+    override fun seekToNext() { if (!redirect("skip next", RemoteCommand.SkipNext)) super.seekToNext() }
+    override fun seekToNextMediaItem() { if (!redirect("skip next", RemoteCommand.SkipNext)) super.seekToNextMediaItem() }
+    override fun seekToPrevious() { if (!redirect("skip prev", RemoteCommand.SkipPrev)) super.seekToPrevious() }
+    override fun seekToPreviousMediaItem() { if (!redirect("skip prev", RemoteCommand.SkipPrev)) super.seekToPreviousMediaItem() }
 
     override fun seekTo(positionMs: Long) {
-        AppLog.i(TAG, "seek to ${positionMs / 1000}s by ${caller()}")
-        if (!jam.redirect(RemoteCommand.SeekTo(positionMs.coerceAtLeast(0).toULong()))) super.seekTo(positionMs)
+        if (!redirect("seek to ${positionMs / 1000}s", RemoteCommand.SeekTo(positionMs.coerceAtLeast(0).toULong()))) super.seekTo(positionMs)
     }
+
+    /** Logs the action with its source; true: the Jam host does it (comes back via Connect). */
+    private fun redirect(what: String, cmd: RemoteCommand): Boolean =
+        jam.redirect(cmd).also { AppLog.i(TAG, "$what by ${caller()}" + if (it) " (sent to the Jam)" else "") }
 
     /** Queue tap: the Jam knows our items by the uids ConnectTarget publishes. */
     override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
@@ -49,6 +52,6 @@ class JamAwarePlayer(
                 RemoteCommand.SkipTo(RemoteTrack("spotify:track:${item.mediaId}", item.uid, provider))
             }
         }
-        if (cmd == null || !jam.redirect(cmd)) super.seekTo(mediaItemIndex, positionMs)
+        if (cmd == null || !redirect("jump to item $mediaItemIndex", cmd)) super.seekTo(mediaItemIndex, positionMs)
     }
 }

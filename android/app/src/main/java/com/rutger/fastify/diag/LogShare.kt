@@ -13,7 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 object LogShare {
-    /** Bundles the app log + this process's logcat (incl. Rust) and opens the share sheet. */
+    /** Bundles all retained log files (oldest first) + this process's logcat and opens the share sheet. */
     suspend fun share(context: Context, extra: String? = null) {
         val file = withContext(Dispatchers.IO) { collect(context, extra) }
         val uri = FileProvider.getUriForFile(context, context.packageName + ".logs", file)
@@ -30,6 +30,7 @@ object LogShare {
     }
 
     private fun collect(context: Context, extra: String?): File {
+        AppLog.flush()
         val out = File(File(context.cacheDir, "shared").apply { mkdirs() }, "fastify-logs.txt")
         out.bufferedWriter().use { w ->
             w.appendLine("Fastify ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_HASH})")

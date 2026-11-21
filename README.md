@@ -121,6 +121,17 @@ rootlist unless saved). Persisted-query hashes are hardcoded and re-scraped from
 - Animations last at most 150 ms (`ANIM_MS` in `ui/Motion.kt`), everywhere in the app. Use `fast()` for every animationSpec instead of Compose/Material defaults. Exception until material3 1.5 is stable: Material's internal motion (bottom sheets), because `MaterialTheme(motionScheme = …)` is internal in 1.4.0.
 - Page/back transitions slide (pages horizontally, player/lyrics vertically), also for predictive back. No scaling.
 
+## Logging
+
+`diag/AppLog.kt` (Kotlin) and `applog.rs` (core, forwarded into the same file). Share logs (Home → bug icon → Diagnostics) sends every retained file, oldest first, plus logcat.
+
+- INFO, always one line: every external event. Connect requests (`connect request #N <endpoint> from <device> [we: ...] -> handled/ignored/failed; reply ...`), active device changes (old -> new), transfers, play/pause/skip/seek with their source (UI, notification, media button, Connect device, autoplay, focus guard), session/dealer/Jam connection changes, network up/down, downloads start/done, errors.
+- DEBUG (`AppLog.d`, `log::debug!`; logcat only): periodic and repeated stuff, per-attempt lines (AP connects, retries), library fetch timings, buffering under 1 s, audio-focus ducks under 10 s, cluster changes that only touch the track or our own play state.
+- Loops (watchers, retries): `AppLog.w(..., repeated = true)`. First one in full, then `(xN more since <time>)` every 10 min; while the network is down only counted, summed up in the "network up" line. librespot warnings get this automatically.
+- Stack traces: once per kind per process, later ones one line.
+- No silent drops: every code path that ignores a Connect request or event logs why.
+- Files: `filesDir/logs/app-<start>.log`, new one per day or at 256 KB; kept max 7 days and 1 MB in total, oldest deleted first.
+
 ## Build
 
 Requirements: Rust (stable), `cargo-ndk`, Android SDK 37, NDK r30, JDK 17.

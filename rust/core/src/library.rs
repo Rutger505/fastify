@@ -214,7 +214,7 @@ pub async fn hydrate_tracks(
             album_id: base62(t.album.gid()),
         });
     }
-    log::info!("hydrated {}/{} tracks", out.len(), ids.len());
+    log::debug!("hydrated {}/{} tracks", out.len(), ids.len());
     Ok(out)
 }
 
@@ -291,7 +291,7 @@ pub async fn rootlist(session: &Session) -> Result<Vec<PlaylistInfo>, CoreError>
         }
         from += n;
     }
-    log::info!("rootlist: {} playlists", out.len());
+    log::debug!("rootlist: {} playlists", out.len());
     Ok(out)
 }
 
@@ -435,7 +435,7 @@ pub(crate) async fn collection_set(session: &Session, set: &str) -> Result<Vec<S
         }
         token = next;
     }
-    log::info!("collection {set}: {} items", uris.len());
+    log::debug!("collection {set}: {} items", uris.len());
     // Stable sort: items with equal timestamps keep the server order.
     uris.sort_by(|a, b| b.added_at.cmp(&a.added_at));
     Ok(uris.into_iter().map(|i| i.uri).collect())
@@ -495,7 +495,7 @@ pub async fn search_tracks(session: &Session, query: &str) -> Result<Vec<TrackIn
         })
         .take(50)
         .collect();
-    log::info!("search '{query}': {} track ids", ids.len());
+    log::debug!("search '{query}': {} track ids", ids.len());
     hydrate_tracks(session, &ids).await
 }
 
@@ -539,7 +539,7 @@ pub async fn autoplay(
             ids.push(id.to_owned());
         }
     }
-    log::info!(
+    log::debug!(
         "autoplay {context_uri}: {} pages, {} uris, {} new tracks",
         ctx.pages.len(),
         uris.len(),

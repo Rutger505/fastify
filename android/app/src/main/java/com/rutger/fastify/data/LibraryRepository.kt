@@ -194,7 +194,7 @@ class LibraryRepository(
             emit(Loadable(fresh, refreshing = false))
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            AppLog.w("Library", "refresh $key failed", e)
+            AppLog.w("Library", "refresh $key failed", e, repeated = true)
             emit(Loadable(cached, refreshing = false, error = "${e.javaClass.simpleName}: ${e.message}"))
         }
     }.flowOn(Dispatchers.IO)
@@ -241,7 +241,7 @@ class LibraryRepository(
         val start = System.currentTimeMillis()
         val result = block()
         val size = (result as? kotlin.collections.Collection<*>)?.size
-        AppLog.i("Library", "$what: ${size ?: "ok"} in ${System.currentTimeMillis() - start} ms")
+        AppLog.d("Library", "$what: ${size ?: "ok"} in ${System.currentTimeMillis() - start} ms")
         return result
     }
 

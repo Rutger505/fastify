@@ -89,7 +89,7 @@ class AppContainer(val app: Application) {
                     _username.value = it
                     sessionPrefs.edit().putString("username", it).apply()
                 }
-                .onFailure { AppLog.w("Core", "warm-up connect failed", it) }
+                .onFailure { AppLog.w("Core", "warm-up connect failed", it, repeated = true) }
         }
     }
 

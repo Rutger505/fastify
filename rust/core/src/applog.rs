@@ -22,6 +22,36 @@ pub fn set_log_sink(sink: Arc<dyn LogSink>) {
     drop(sink);
 }
 
+/// Level a core line gets in the app log: librespot's per-attempt and follow-up lines are
+/// debug (logcat only, not in the file). Info and up go to the file, where Kotlin's AppLog
+/// aggregates repeats (README "Logging").
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn file_level(target: &str, message: &str, level: log::Level) -> log::Level {
+    const DEBUG: &[(&str, &str)] = &[
+        // Every AP attempt; "Authenticated as" / "Tried too many access points" say how it ended.
+        ("librespot_core::session", "Connecting to AP"),
+        ("librespot_core::session", "Try another access point"),
+        ("librespot_core::session", "Received unexpected Ping"),
+        ("librespot_core::session", "Country:"),
+        ("librespot_core::spclient", "Resolved "),
+        // Always right after "Resolve access points error".
+        (
+            "librespot_core::apresolve",
+            "Failed to resolve all access points",
+        ),
+        // Follows every broken websocket ("Websocket connection failed" says why).
+        ("librespot_core::dealer", "Error while closing websocket"),
+    ];
+    if DEBUG
+        .iter()
+        .any(|(t, m)| target == *t && message.starts_with(m))
+    {
+        log::Level::Debug
+    } else {
+        level
+    }
+}
+
 /// Installs the core logger once.
 pub(crate) fn init() {
     #[cfg(target_os = "android")]
@@ -43,24 +73,50 @@ mod android {
 
     impl Log for CoreLogger {
         fn enabled(&self, metadata: &Metadata) -> bool {
-            metadata.level() <= Level::Info
+            metadata.level() <= max_level(metadata.target())
         }
 
         fn log(&self, record: &Record) {
             if !self.enabled(record.metadata()) {
                 return;
             }
-            self.logcat.log(record);
-            let Some(sink) = self.sink.read().unwrap().clone() else { return };
-            let level = match record.level() {
+            let message = record.args().to_string();
+            let level = super::file_level(record.target(), &message, record.level());
+            if level == record.level() {
+                self.logcat.log(record);
+            } else {
+                self.logcat.log(
+                    &Record::builder()
+                        .level(level)
+                        .target(record.target())
+                        .args(format_args!("{message}"))
+                        .build(),
+                );
+            }
+            if level > Level::Info {
+                return;
+            }
+            let Some(sink) = self.sink.read().unwrap().clone() else {
+                return;
+            };
+            let level = match level {
                 Level::Error => "E",
                 Level::Warn => "W",
                 _ => "I",
             };
-            sink.log(level.into(), record.target().into(), record.args().to_string());
+            sink.log(level.into(), record.target().into(), message);
         }
 
         fn flush(&self) {}
+    }
+
+    /// Our own debug lines reach logcat; librespot's only from info up.
+    fn max_level(target: &str) -> Level {
+        if target.starts_with("fastify_core") {
+            Level::Debug
+        } else {
+            Level::Info
+        }
     }
 
     static LOGGER: OnceLock<CoreLogger> = OnceLock::new();
@@ -73,14 +129,50 @@ mod android {
                 sink: RwLock::new(None),
                 logcat: android_logger::AndroidLogger::new(
                     android_logger::Config::default()
-                        .with_max_level(LevelFilter::Info)
+                        .with_max_level(LevelFilter::Debug)
                         .with_tag("fastify-core"),
                 ),
             }
         });
         if fresh && log::set_logger(logger).is_ok() {
-            log::set_max_level(LevelFilter::Info);
+            log::set_max_level(LevelFilter::Debug);
         }
         logger
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use log::Level;
+
+    use super::file_level;
+
+    #[test]
+    fn demotes_ap_attempts_only() {
+        let ap = "Connecting to AP \"ap.spotify.com:443\"";
+        assert_eq!(
+            file_level("librespot_core::session", ap, Level::Info),
+            Level::Debug
+        );
+        assert_eq!(
+            file_level(
+                "librespot_core::session",
+                "Authenticated as 'x' !",
+                Level::Info
+            ),
+            Level::Info
+        );
+        assert_eq!(
+            file_level(
+                "librespot_core::dealer",
+                "Websocket connection failed: x",
+                Level::Warn
+            ),
+            Level::Warn
+        );
+        assert_eq!(
+            file_level("fastify_core::connect", "Connecting to AP", Level::Info),
+            Level::Info
+        );
     }
 }

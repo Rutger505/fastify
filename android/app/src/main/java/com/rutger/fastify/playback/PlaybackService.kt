@@ -123,7 +123,7 @@ class PlaybackService : MediaSessionService() {
     /** Controller of the session call running now: app UI, notification, Bluetooth, Assistant, ... */
     private fun caller(): String {
         val s = session ?: return "?"
-        val c = s.controllerForCurrentRequest ?: return "?"
+        val c = s.controllerForCurrentRequest ?: return "app (no controller)"
         return if (s.isMediaNotificationController(c)) "notification" else c.packageName
     }
 

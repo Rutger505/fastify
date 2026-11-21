@@ -124,7 +124,11 @@ async fn request(
         (None, &Method::GET) => None,
         (None, _) => Some(b"{}".to_vec()),
     };
-    log::info!("jam {method} {}", path.split('?').next().unwrap_or(path));
+    if method == Method::GET {
+        log::debug!("jam {method} {}", path.split('?').next().unwrap_or(path));
+    } else {
+        log::info!("jam {method} {}", path.split('?').next().unwrap_or(path));
+    }
     match tokio::time::timeout(
         std::time::Duration::from_secs(15),
         session.spclient().request(&method, path, Some(headers), body.as_deref()),

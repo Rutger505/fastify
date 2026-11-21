@@ -14,8 +14,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -126,22 +128,31 @@ class Downloads(
 
     private fun enqueue(id: String) {
         if (!pending.add(id)) return
-        _active.update { it + 1 }
+        if (_active.getAndUpdate { it + 1 } == 0) {
+            batch.set(Batch(System.currentTimeMillis()))
+            AppLog.i("Downloads", "downloads started")
+        }
         startService()
         scope.launch(Dispatchers.IO) {
             try {
                 gate.withPermit {
                     // Unpinned while waiting.
                     if (members.value.values.none { id in it }) return@withPermit
+                    AppLog.d("Downloads", "download $id")
                     core().download(id)
                     _trackIds.update { it + id }
+                    batch.get().ok.incrementAndGet()
                 }
             } catch (e: Exception) {
-                AppLog.w("Downloads", "download $id failed: ${e.message}")
+                AppLog.w("Downloads", "download $id failed: ${e.message}", repeated = true)
+                batch.get().failed.incrementAndGet()
                 failed.update { it + id }
             } finally {
                 pending.remove(id)
-                _active.update { it - 1 }
+                if (_active.updateAndGet { it - 1 } == 0) {
+                    val b = batch.get()
+                    AppLog.i("Downloads", "downloads done: ${b.ok} ok, ${b.failed} failed in ${(System.currentTimeMillis() - b.started) / 1000} s")
+                }
             }
         }
     }
@@ -156,10 +167,17 @@ class Downloads(
         }
     }
 
+    /** Counts since the queue last went from idle to busy, for the start/done lines. */
+    private class Batch(val started: Long) {
+        val ok = java.util.concurrent.atomic.AtomicInteger()
+        val failed = java.util.concurrent.atomic.AtomicInteger()
+    }
+    private val batch = java.util.concurrent.atomic.AtomicReference(Batch(0))
+
     private fun startService() {
         // Foreground service so a long download survives the app going to the background.
         runCatching { context.startForegroundService(Intent(context, DownloadService::class.java)) }
-            .onFailure { AppLog.w("Downloads", "download service not started: ${it.message}") }
+            .onFailure { AppLog.w("Downloads", "download service not started: ${it.message}", repeated = true) }
     }
 
     private fun load(): List<Collection> = runCatching {

@@ -154,7 +154,7 @@ pub async fn artist(session: &Session, id: &str) -> Result<ArtistPage, CoreError
         .map(|b| b.text().trim().to_owned())
         .find(|t| !t.is_empty());
 
-    log::info!(
+    log::debug!(
         "artist {}: {} top, {} albums, {} singles, {} compilations, {} appears on",
         a.name(),
         top_tracks.len(),
@@ -235,7 +235,7 @@ pub async fn new_releases(session: &Session, days: u32) -> Result<Vec<AlbumInfo>
         })
         .collect();
     albums.sort_by(|a, b| b.release_date.cmp(&a.release_date));
-    log::info!(
+    log::debug!(
         "new releases: {} artists, {} candidates, {} in the last {days} days",
         artists.len(),
         ids.len(),

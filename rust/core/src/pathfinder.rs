@@ -280,7 +280,7 @@ pub async fn artist_playcounts(
             Some((id, count))
         })
         .collect();
-    log::info!("artist {artist_id}: {} play counts", counts.len());
+    log::debug!("artist {artist_id}: {} play counts", counts.len());
     Ok(counts)
 }
 
@@ -299,7 +299,7 @@ pub async fn search_catalog(
     };
     let albums: Vec<AlbumInfo> = items("/searchV2/albumsV2/items").into_iter().filter_map(album).collect();
     let playlists: Vec<PlaylistInfo> = items("/searchV2/playlists/items").into_iter().filter_map(|p| playlist(p).map(|(p, _)| p)).collect();
-    log::info!("search '{query}': {} albums, {} playlists", albums.len(), playlists.len());
+    log::debug!("search '{query}': {} albums, {} playlists", albums.len(), playlists.len());
     Ok((albums, playlists))
 }
 
@@ -320,7 +320,7 @@ pub async fn top_songs_playlists(session: &Session) -> Result<Vec<PlaylistInfo>,
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0));
     found.dedup_by(|a, b| a.1.id == b.1.id);
-    log::info!("top songs playlists: {:?}", found.iter().map(|(y, _)| y).collect::<Vec<_>>());
+    log::debug!("top songs playlists: {:?}", found.iter().map(|(y, _)| y).collect::<Vec<_>>());
     Ok(found.into_iter().map(|(_, p)| p).collect())
 }
 

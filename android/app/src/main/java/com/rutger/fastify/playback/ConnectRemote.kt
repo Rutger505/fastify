@@ -109,13 +109,13 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
                         failures = 0
                         if (s.version != version) {
                             version = s.version
-                            s.error?.let { AppLog.w(TAG, "observer: ${it}") }
+                            s.error?.let { AppLog.w(TAG, "observer: $it", repeated = true) }
                             onState(s)
                         }
                     }
                     .onFailure { e ->
                         if (e is CancellationException) throw e
-                        AppLog.w(TAG, "watch failed", e)
+                        AppLog.w(TAG, "watch failed", e, repeated = true)
                         delay(2_000L shl failures.coerceAtMost(4))
                         failures++
                     }
