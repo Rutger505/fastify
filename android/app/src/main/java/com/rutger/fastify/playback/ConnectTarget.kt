@@ -1,8 +1,12 @@
 package com.rutger.fastify.playback
 
 import android.content.Context
+import android.database.ContentObserver
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -50,6 +54,7 @@ class ConnectTarget(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = context.getSystemService(AudioManager::class.java)
+    private val resolver = context.contentResolver
     private val name = "Fastify (${Build.MODEL})"
     /**
      * Calls into the core, off the main thread but in order: the state must be in before a
@@ -69,6 +74,9 @@ class ConnectTarget(
 
     fun start() {
         player.addListener(listener)
+        // Volume keys etc. aren't player events: publish the phone's volume right when it changes.
+        lastVolumeIndex = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        resolver.registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver)
         scope.launch(Dispatchers.IO) {
             for (op in ops) {
                 runCatching {
@@ -102,6 +110,7 @@ class ConnectTarget(
 
     fun stop() {
         player.removeListener(listener)
+        resolver.unregisterContentObserver(volumeObserver)
         scope.cancel()
         // Back to a hidden observer: the device can't be reached without the service.
         Thread { runCatching { core().connectSetPlayer(null) } }.start()
@@ -315,6 +324,19 @@ class ConnectTarget(
                 ?: (volumeIndex * 65535 / max).toUInt(),
         )
         ops.trySend(Op.SetPlayer(state))
+    }
+
+    /** STREAM_MUSIC index last seen by [volumeObserver]; other settings changes don't count. */
+    private var lastVolumeIndex = 0
+
+    private val volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            val index = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (index == lastVolumeIndex) return
+            lastVolumeIndex = index
+            AppLog.i(TAG, "phone volume -> $index/${audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}")
+            publishNow()
+        }
     }
 
     private val listener = object : Player.Listener {

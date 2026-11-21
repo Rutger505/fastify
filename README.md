@@ -73,6 +73,14 @@ can move playback anywhere, both ways.
   active; `PROBE_NO_ACTIVATE=1` refuses loads so it never takes playback from a device in use). Test with two probe dirs (copy `credentials/`, own `keys/device_id`), not the PC:
   PC playback is Rutger's, don't start/stop it without asking.
 - Not reachable when the service is gone (app closed and not playing).
+- Remote session: while `ConnectRemote.target` is set, `PlaybackService` swaps the session player
+  to `ConnectRemotePlayer` (`PLAYBACK_TYPE_REMOTE`, max volume = the device's `volume_steps`):
+  volume keys, system volume panel, notification, lock screen and Bluetooth control that device;
+  the service then follows the cluster too (app closed). `PlayerConnection` ignores controller
+  state while the session is remote. Remote volume is optimistic (`ConnectRemote.volumes`):
+  PUTs coalesce (latest wins), cluster volumes are ignored for 2 s after a local change.
+- Phone volume changes (volume keys, other apps) are published right away (settings observer in
+  `ConnectTarget`), not on the next player event.
 - Device switch: `ConnectRemote.switching` is set on tap (picker spinner, "Switching to …" in the
   player) and cleared once the cluster names the target, on failure, or after 8 s.
 - Shuffle is per context (`ShuffleStore`): playing a playlist/album/artist starts in the mode it

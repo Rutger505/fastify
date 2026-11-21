@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.os.Bundle
 import androidx.core.content.ContextCompat
+import androidx.media3.common.DeviceInfo
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -80,6 +81,8 @@ class PlayerConnection(
     private var controller: MediaController? = null
     private var ticker: Job? = null
     private var pending: (MediaController.() -> Unit)? = null
+    /** The session showed the Connect device ([ConnectRemotePlayer]) at the last refresh. */
+    private var sessionRemote = false
 
     fun connect() {
         if (future != null) return
@@ -101,7 +104,7 @@ class PlayerConnection(
         ticker = scope.launch {
             while (isActive) {
                 controller?.let { c ->
-                    if (c.isPlaying) _state.value = _state.value.copy(positionMs = c.currentPosition)
+                    if (c.isPlaying && !c.isRemote) _state.value = _state.value.copy(positionMs = c.currentPosition)
                 }
                 delay(500)
             }
@@ -255,13 +258,20 @@ class PlayerConnection(
         }
     }
 
+    /** Session player is the Connect device, not the phone's ExoPlayer (see PlaybackService.route). */
+    private val MediaController.isRemote get() = deviceInfo.playbackType == DeviceInfo.PLAYBACK_TYPE_REMOTE
+
     private fun refresh(full: Boolean) {
         val c = controller ?: return
+        // Remote state comes from [remote]; keep the phone's last state until the session is back.
+        if (c.isRemote) { sessionRemote = true; return }
+        val whole = full || sessionRemote
+        sessionRemote = false
         val before = _state.value
         // Playing on the phone (notification, Bluetooth, a transfer here) ends remote control.
         if (c.isPlaying && !before.isPlaying) remote.detach(dismiss = false)
-        val queue = if (full) (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toTrack() } else _state.value.queue
-        val autoplayFrom = if (full) (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).isAutoplay } ?: -1
+        val queue = if (whole) (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toTrack() } else _state.value.queue
+        val autoplayFrom = if (whole) (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).isAutoplay } ?: -1
         else _state.value.autoplayFrom
         _state.value = PlayerUiState(
             connected = true,
@@ -276,10 +286,10 @@ class PlayerConnection(
             shuffle = c.shuffleModeEnabled,
             repeatMode = c.repeatMode,
             queue = queue,
-            order = if (full) playOrder(c) else _state.value.order,
+            order = if (whole) playOrder(c) else _state.value.order,
             index = c.currentMediaItemIndex,
             autoplayFrom = autoplayFrom,
-            queued = if (full) (0 until c.mediaItemCount).filter { c.getMediaItemAt(it).isQueued }.toSet() else _state.value.queued,
+            queued = if (whole) (0 until c.mediaItemCount).filter { c.getMediaItemAt(it).isQueued }.toSet() else _state.value.queued,
             error = c.playerError?.let(::describe),
             contextUri = c.sessionExtras.getString(ARG_CONTEXT_URI),
         )

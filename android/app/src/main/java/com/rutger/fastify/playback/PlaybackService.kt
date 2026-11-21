@@ -24,8 +24,11 @@ import com.rutger.fastify.data.toTrack
 import com.rutger.fastify.diag.AppLog
 import com.rutger.fastify.ui.MainActivity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -46,6 +49,11 @@ class PlaybackService : MediaSessionService() {
     private var connect: ConnectTarget? = null
     private var playbackLog: PlaybackLog? = null
     private var focusGuard: FocusGuard? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private lateinit var localPlayer: Player
+    private var remotePlayer: ConnectRemotePlayer? = null
+    /** Holding a [ConnectRemote.start]: the cluster is followed while the session is remote. */
+    private var watchingRemote = false
 
     override fun onCreate() {
         super.onCreate()
@@ -73,7 +81,8 @@ class PlaybackService : MediaSessionService() {
         playbackLog = PlaybackLog(this, player).also { it.start() }
         focusGuard = FocusGuard(this, player) { c.core }.also { it.start() }
 
-        session = MediaSession.Builder(this, JamAwarePlayer(player, c.jam, ::caller))
+        localPlayer = JamAwarePlayer(player, c.jam, ::caller)
+        session = MediaSession.Builder(this, localPlayer)
             .setCallback(SessionCallback())
             .setSessionActivity(
                 PendingIntent.getActivity(
@@ -87,6 +96,26 @@ class PlaybackService : MediaSessionService() {
         c.jam.startWatching()
         connect = ConnectTarget(this, player, { c.core }, ::playOrder, { contextUri }, ::setContext)
             .also { it.start() }
+        remotePlayer = ConnectRemotePlayer(c.remote, ::caller)
+        scope.launch { c.remote.target.collect(::route) }
+    }
+
+    /**
+     * Controlling a Connect device: the session exposes it ([ConnectRemotePlayer]), so volume
+     * keys, notification, lock screen and Bluetooth control that device, like Spotify. The app's
+     * own controller sees it as remote and keeps its last local state ([PlayerConnection]).
+     */
+    private fun route(target: String?) {
+        val s = session ?: return
+        val remote = container.remote
+        if (target != null && !watchingRemote) remote.start()
+        if (target == null && watchingRemote) remote.stop()
+        watchingRemote = target != null
+        val want = if (target != null) remotePlayer ?: return else localPlayer
+        if (s.player === want) return
+        val name = target?.let { id -> remote.state.value?.devices?.find { it.id == id }?.name ?: id }
+        AppLog.i("Session", "controls ${name ?: "this phone"}")
+        s.player = want
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -100,7 +129,9 @@ class PlaybackService : MediaSessionService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         AppLog.i("Playback", "task removed (swiped away), playWhenReady ${player.playWhenReady}")
-        if (!player.playWhenReady || player.mediaItemCount == 0) {
+        // Controlling a playing Connect device: keep its notification and volume keys, like Spotify.
+        val remotePlaying = session?.player === remotePlayer && remotePlayer?.playWhenReady == true
+        if (!remotePlaying && (!player.playWhenReady || player.mediaItemCount == 0)) {
             saveQueue()
             stopSelf()
         }
@@ -113,10 +144,15 @@ class PlaybackService : MediaSessionService() {
         focusGuard = null
         connect?.stop()
         connect = null
+        scope.cancel()
+        if (watchingRemote) container.remote.stop()
+        watchingRemote = false
         autoplayJob?.cancel()
         saveQueue()
         session?.release()
         session = null
+        remotePlayer?.release()
+        remotePlayer = null
         player.release()
         super.onDestroy()
     }
@@ -282,6 +318,11 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            // Playing here (transfer, Connect command) ends remote control, also with the app closed.
+            if (isPlaying && container.remote.target.value != null) {
+                AppLog.i("Session", "phone plays: stop controlling the Connect device")
+                container.remote.detach(dismiss = false)
+            }
             if (!isPlaying) saveQueue() else prefetchUpcoming()
         }
 

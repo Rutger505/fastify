@@ -14,11 +14,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -67,6 +73,27 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
      * that still name the old device are stale, don't follow or detach on them.
      */
     @Volatile private var expect: Pair<String?, Long>? = null
+
+    /** Volume set here (0..65535) and when, per device: wins over the cluster until it settles. */
+    private data class Held(val volume: Int, val atMs: Long)
+    private val held = MutableStateFlow<Map<String, Held>>(emptyMap())
+    private val volumeWake = Channel<Unit>(Channel.CONFLATED)
+
+    /**
+     * Device volumes (0..65535) as the UI should show them: what was just set here (slider,
+     * volume keys) for [VOLUME_HOLD_MS] after the last change, else the cluster's.
+     */
+    val volumes: StateFlow<Map<String, Int>> = combine(_state, held) { s, h ->
+        s?.devices.orEmpty().associate { it.id to it.volume.toInt() } + h.mapValues { it.value.volume }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+    /** [volumes] for one device, current right after [setVolume] (the flow follows a bit later). */
+    fun volume(deviceId: String): Int? =
+        held.value[deviceId]?.volume ?: _state.value?.devices?.find { it.id == deviceId }?.volume?.toInt()
+
+    init {
+        scope.launch { sendVolumes() }
+    }
 
     /** Watch the cluster while the app is visible. Pair every call with [stop]. */
     @Synchronized
@@ -301,8 +328,61 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         send(RemoteCommand.Play(contextUri, tracks.map { it.id }, start.coerceAtLeast(0).toUInt(), 0UL, shuffle))
 
     fun pause() = send(RemoteCommand.Pause)
+    fun resume() = send(RemoteCommand.Resume)
+    fun setShuffle(on: Boolean) = send(RemoteCommand.SetShuffle(on))
 
-    fun setVolume(deviceId: String, volume: Int) = send(RemoteCommand.Volume(volume.coerceIn(0, 65535).toUInt()), deviceId)
+    fun setRepeatMode(mode: Int) = send(RemoteCommand.SetRepeat(
+        context = mode != Player.REPEAT_MODE_OFF,
+        track = mode == Player.REPEAT_MODE_ONE,
+    ))
+
+    /**
+     * Optimistic: [volumes] shows it right away; PUTs go out one at a time, the latest value wins
+     * (volume keys repeat faster than the server answers).
+     */
+    fun setVolume(deviceId: String, volume: Int) {
+        val v = volume.coerceIn(0, 65535)
+        held.update { it + (deviceId to Held(v, System.currentTimeMillis())) }
+        volumeWake.trySend(Unit)
+    }
+
+    /** Sends [held] volumes, then drops each hold [VOLUME_HOLD_MS] after its last change/PUT. */
+    private suspend fun sendVolumes() {
+        val sent = HashMap<String, Int>()
+        while (true) {
+            val h = held.value
+            val todo = h.entries.firstOrNull { sent[it.key] != it.value.volume }
+            if (todo != null) {
+                val (device, want) = todo
+                runCatching { core().connectCommand(device, RemoteCommand.Volume(want.volume.toUInt())) }
+                    .onSuccess { if (error != null) { error = null; render() } }
+                    .onFailure { e ->
+                        if (e is CancellationException) throw e
+                        AppLog.w(TAG, "volume ${want.volume} on $device failed", e)
+                        error = "Connect volume: ${e.message}"
+                        render()
+                    }
+                sent[device] = want.volume
+                // Hold from when the PUT is done: the cluster echoing it comes after that.
+                held.update { m -> m[device]?.takeIf { it.volume == want.volume }?.let { m + (device to it.copy(atMs = System.currentTimeMillis())) } ?: m }
+                continue
+            }
+            if (h.isEmpty()) {
+                sent.clear()
+                volumeWake.receive()
+                continue
+            }
+            val now = System.currentTimeMillis()
+            val expired = h.filterValues { now - it.atMs >= VOLUME_HOLD_MS }
+            if (expired.isNotEmpty()) {
+                // Only if unchanged meanwhile (a key press between the read and now).
+                held.update { m -> m.filter { (id, v) -> expired[id] != v } }
+                expired.keys.forEach(sent::remove)
+                continue
+            }
+            withTimeoutOrNull(h.values.minOf { VOLUME_HOLD_MS - (now - it.atMs) }) { volumeWake.receive() }
+        }
+    }
 
     /**
      * Spotify Connect transfer: playback (queue, position, play/pause) moves from device [from] to
@@ -355,5 +435,7 @@ class ConnectRemote(private val core: () -> FastifyCore, private val local: () -
         private const val HYDRATE_AHEAD = 50
         private const val HYDRATE_BEHIND = 10
         private const val TRANSFER_SETTLE_MS = 8_000L
+        /** Cluster volumes are ignored this long after a local change (stale ones lag behind). */
+        private const val VOLUME_HOLD_MS = 2_000L
     }
 }

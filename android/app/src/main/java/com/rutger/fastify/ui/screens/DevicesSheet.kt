@@ -45,6 +45,7 @@ fun DevicesSheet(onDismiss: () -> Unit) {
     val remote by c.remote.state.collectAsStateWithLifecycle()
     val target by c.remote.target.collectAsStateWithLifecycle()
     val switching by c.remote.switching.collectAsStateWithLifecycle()
+    val volumes by c.remote.volumes.collectAsStateWithLifecycle()
     // While switching, the destination is the selected one (with a spinner), not the old device.
     val selectedId = switching?.let { it.to ?: PHONE } ?: target ?: PHONE
     FastifySheet(onDismiss = onDismiss) {
@@ -71,7 +72,9 @@ fun DevicesSheet(onDismiss: () -> Unit) {
                 c.player.transferTo(d.id)
                 onDismiss()
             }
-            if (target == d.id) VolumeRow(d.volume.toInt()) { c.remote.setVolume(d.id, it) }
+            if (target == d.id && d.volumeSteps > 0u) {
+                VolumeRow(volumes[d.id] ?: d.volume.toInt()) { c.remote.setVolume(d.id, it) }
+            }
         }
         Spacer(Modifier.padding(bottom = 16.dp))
     }
@@ -105,8 +108,9 @@ private fun VolumeRow(volume: Int, onChange: (Int) -> Unit) {
         Spacer(Modifier.width(8.dp))
         Slider(
             value = if (dragging) value else volume / 65535f,
-            onValueChange = { dragging = true; value = it },
-            onValueChangeFinished = { onChange((value * 65535).toInt()); dragging = false },
+            // Live while dragging: ConnectRemote coalesces the PUTs (latest wins) and holds the value.
+            onValueChange = { dragging = true; value = it; onChange((it * 65535).toInt()) },
+            onValueChangeFinished = { dragging = false },
         )
     }
 }

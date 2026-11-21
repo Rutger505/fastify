@@ -59,6 +59,8 @@ pub struct RemoteDevice {
     pub kind: String,
     /// 0..=65535.
     pub volume: u32,
+    /// Volume steps the device has (volume keys move one step), 0 = fixed volume.
+    pub volume_steps: u32,
     pub can_play: bool,
 }
 
@@ -1173,6 +1175,11 @@ fn publish(tx: &watch::Sender<RemoteState>, c: &Cluster, me: &str, confirmed: bo
             name: d.name.clone(),
             kind: format!("{:?}", d.device_type.enum_value_or_default()).to_lowercase(),
             volume: d.volume,
+            volume_steps: match (d.capabilities.disable_volume, d.capabilities.volume_steps) {
+                (true, _) => 0,
+                (false, n) if n > 0 => n as u32,
+                _ => 16,
+            },
             can_play: d.can_play,
         })
         .collect();
