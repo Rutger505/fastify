@@ -8,6 +8,7 @@ import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.data.Downloads
 import com.rutger.fastify.data.LibraryRepository
 import com.rutger.fastify.data.SnapshotStore
+import com.rutger.fastify.data.Unplayable
 import com.rutger.fastify.data.PlayHistory
 import com.rutger.fastify.data.SearchHistory
 import com.rutger.fastify.data.ShazamHistory
@@ -57,13 +58,14 @@ class AppContainer(val app: Application) {
     val library by lazy { LibraryRepository({ core }, snapshots, history) }
     val queueStore by lazy { QueueStore(File(app.filesDir, "queue.json")) }
     val shuffle by lazy { ShuffleStore(app.getSharedPreferences("shuffle", android.content.Context.MODE_PRIVATE)) }
-    val streams by lazy { StreamPool { core } }
-    val prefetcher by lazy { Prefetcher(scope) { core } }
+    val unplayable by lazy { Unplayable(app.getSharedPreferences("unplayable", android.content.Context.MODE_PRIVATE)) }
+    val streams by lazy { StreamPool(unplayable) { core } }
+    val prefetcher by lazy { Prefetcher(scope, unplayable) { core } }
     val remote: ConnectRemote by lazy { ConnectRemote({ core }, { player.localState.value }) }
     val contextTitles by lazy { ContextTitles(app.getSharedPreferences("context_titles", android.content.Context.MODE_PRIVATE)) }
-    val player: PlayerConnection by lazy { PlayerConnection(app, remote, shuffle, contextTitles) { jam } }
+    val player: PlayerConnection by lazy { PlayerConnection(app, remote, shuffle, contextTitles, unplayable.skipped) { jam } }
     val jam: JamController by lazy { JamController(scope, { core }, { http }) }
-    val downloads by lazy { Downloads(app, scope, { core }, library, foreground) }
+    val downloads by lazy { Downloads(app, scope, { core }, library, foreground, unplayable) }
 
     /** MainActivity is started (visible). */
     val foreground = MutableStateFlow(false)

@@ -64,12 +64,14 @@ class PlayerConnection(
     val remote: ConnectRemote,
     private val shuffles: ShuffleStore,
     val contextTitles: ContextTitles,
+    /** Why the service skipped a track (unplayable), shown like a player error. */
+    private val skipped: StateFlow<String?>,
     private val jam: () -> JamController,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(PlayerUiState())
-    val state: StateFlow<PlayerUiState> = combine(_state, remote.ui, remote.switching) { local, r, sw ->
-        (r ?: local).let { if (sw != null) it.copy(switchingTo = sw.name) else it }
+    val state: StateFlow<PlayerUiState> = combine(_state, remote.ui, remote.switching, skipped) { local, r, sw, skip ->
+        (r ?: local.copy(error = local.error ?: skip)).let { if (sw != null) it.copy(switchingTo = sw.name) else it }
     }
         .stateIn(scope, SharingStarted.Eagerly, PlayerUiState())
 

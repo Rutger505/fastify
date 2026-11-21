@@ -28,6 +28,9 @@ class SpotifyDataSource(private val pool: StreamPool) : BaseDataSource(/* isNetw
             ?: throw DataSourceException(PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS)
         val s = try {
             pool.get(trackId)
+        } catch (e: com.rutger.fastify.data.Unplayable.TrackException) {
+            // FileNotFoundException: ExoPlayer fails it once instead of retrying.
+            throw e
         } catch (e: CoreException) {
             com.rutger.fastify.diag.AppLog.e("Stream", "open $trackId failed", e, repeated = true)
             throw IOException("Can't open track $trackId: ${e.message}", e)

@@ -83,6 +83,7 @@ fun HomeScreen() {
                         c.history.clear()
                         c.streams.clear()
                         c.downloads.clear()
+                        c.unplayable.clear()
                         c.forgetUser()
                         c.auth.logout()
                     }) { Icon(Icons.AutoMirrored.Filled.Logout, "Log out") }

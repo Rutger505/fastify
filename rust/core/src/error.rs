@@ -9,6 +9,9 @@ pub enum CoreError {
     Network { msg: String },
     #[error("not found: {msg}")]
     NotFound { msg: String },
+    /// The track has no file Fastify can play (Ogg Vorbis only): retrying won't help.
+    #[error("unplayable: {msg}")]
+    Unplayable { msg: String },
     #[error("{msg}")]
     Other { msg: String },
 }

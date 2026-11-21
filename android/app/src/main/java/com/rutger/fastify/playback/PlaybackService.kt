@@ -40,6 +40,9 @@ const val ARG_CONTEXT_URI = "uri"
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     private lateinit var player: ExoPlayer
+    private var skippingUnplayable = false
+    /** Unplayable tracks skipped in a row: stops when the whole queue is (repeat all). */
+    private var unplayableRun = 0
 
     /** What the current queue was started from (spotify:playlist:..., ...), seeds autoplay. */
     private var contextUri: String? = null
@@ -294,10 +297,29 @@ class PlaybackService : MediaSessionService() {
 
     private inner class PlayerEvents : Player.Listener {
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-            com.rutger.fastify.diag.AppLog.e("Player", "playback error ${error.errorCodeName} on ${player.currentMediaItem?.mediaId}", error)
+            val id = player.currentMediaItem?.mediaId
+            val unplayable = com.rutger.fastify.data.Unplayable.cause(error)
+            if (unplayable == null || id == null) {
+                AppLog.e("Player", "playback error ${error.errorCodeName} on $id", error)
+                return
+            }
+            // No Ogg Vorbis file: retrying can't help. Skip it, the player shows why.
+            container.unplayable.mark(id, unplayable.message)
+            val title = player.currentMediaItem?.mediaMetadata?.title ?: id
+            container.unplayable.reportSkip("Skipped $title: ${unplayable.message}")
+            if (player.hasNextMediaItem() && ++unplayableRun < player.mediaItemCount) {
+                AppLog.i("Player", "skip $id (source: unplayable, ${unplayable.message})")
+                skippingUnplayable = true
+                player.seekToNextMediaItem()
+                player.prepare()
+            } else {
+                AppLog.i("Player", "stop at $id (unplayable, ${unplayable.message}), nothing after it")
+            }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // The skip notice stays for the track we skipped to, until the next change.
+            if (skippingUnplayable) skippingUnplayable = false else container.unplayable.reportSkip(null)
             mediaItem?.let { item ->
                 container.scope.launch(Dispatchers.IO) { container.history.record(item.toTrack()) }
             }
@@ -318,6 +340,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) unplayableRun = 0
             // Playing here (transfer, Connect command) ends remote control, also with the app closed.
             if (isPlaying && container.remote.target.value != null) {
                 AppLog.i("Session", "phone plays: stop controlling the Connect device")

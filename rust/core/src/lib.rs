@@ -953,8 +953,8 @@ impl FastifyCore {
                 }
             }
         }
-        Err(CoreError::NotFound {
-            msg: format!("no playable Ogg Vorbis file for {track_id}"),
+        Err(CoreError::Unplayable {
+            msg: format!("no Ogg Vorbis file for {track_id}"),
         })
     }
 }

@@ -48,6 +48,7 @@ class Downloads(
     private val core: () -> FastifyCore,
     private val library: LibraryRepository,
     private val foreground: StateFlow<Boolean>,
+    private val unplayable: Unplayable,
 ) {
     private val file = File(context.filesDir, "downloads.json")
     private val json = Json { ignoreUnknownKeys = true }
@@ -130,13 +131,15 @@ class Downloads(
         val before = members.value[c.cacheKey].orEmpty()
         members.update { it + (c.cacheKey to ids) }
         deleteUnreferenced(before - ids.toSet())
+        // Unplayable ones count as failed right away, never retried.
+        failed.update { it + ids.filter { id -> id in unplayable } }
         ids.filter { it !in _trackIds.value && it !in failed.value }.forEach(::enqueue)
     }
 
     /** Retry tracks that failed (e.g. offline at the time). */
     fun retryFailed() {
-        val ids = failed.value
-        failed.value = emptySet()
+        val ids = failed.value.filter { it !in unplayable }
+        failed.update { it - ids.toSet() }
         ids.forEach(::enqueue)
     }
 
@@ -165,6 +168,10 @@ class Downloads(
                     _trackIds.update { it + id }
                     batch.get().ok.incrementAndGet()
                 }
+            } catch (e: com.rutger.fastify.core.CoreException.Unplayable) {
+                unplayable.mark(id, e.message)
+                batch.get().failed.incrementAndGet()
+                failed.update { it + id }
             } catch (e: Exception) {
                 AppLog.w("Downloads", "download $id failed: ${e.message}", repeated = true)
                 batch.get().failed.incrementAndGet()
