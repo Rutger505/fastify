@@ -15,8 +15,6 @@ import java.security.SecureRandom
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -29,8 +27,9 @@ import okhttp3.Request
  * OAuth (authorization code + PKCE) with Spotify's desktop client id, the same flow librespot uses.
  * No developer app needed. The redirect lands on a loopback HTTP server inside the app.
  *
- * The access token feeds both the Web API (library, search) and the first librespot login;
- * librespot then stores reusable credentials so later launches skip OAuth entirely.
+ * The access token is only used for the first librespot login (never for the Web API, which
+ * 429s for this client id); librespot then stores reusable credentials so later launches skip
+ * OAuth entirely.
  */
 class AuthManager(
     context: Context,
@@ -39,14 +38,11 @@ class AuthManager(
 ) {
     private val prefs = context.getSharedPreferences("auth", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
-    private val mutex = Mutex()
 
     private val _loggedIn = MutableStateFlow(prefs.getString(KEY_REFRESH, null) != null)
     val loggedIn: StateFlow<Boolean> = _loggedIn
     val isLoggedIn: Boolean get() = _loggedIn.value
 
-    @Volatile private var accessToken: String? = prefs.getString(KEY_ACCESS, null)
-    @Volatile private var expiresAt: Long = prefs.getLong(KEY_EXPIRES, 0)
 
     /** Runs the whole login. [openBrowser] must show the URL (Custom Tab). */
     suspend fun login(openBrowser: suspend (Uri) -> Unit) = withContext(Dispatchers.IO) {
@@ -85,49 +81,16 @@ class AuthManager(
         _loggedIn.value = true
     }
 
-    /** A valid Web API token; refreshes when needed. */
-    suspend fun token(forceRefresh: Boolean = false): String = mutex.withLock {
-        val cached = accessToken
-        if (!forceRefresh && cached != null && System.currentTimeMillis() < expiresAt - 60_000) {
-            return cached
-        }
-        withContext(Dispatchers.IO) {
-            val refresh = prefs.getString(KEY_REFRESH, null) ?: throw NotLoggedInException()
-            try {
-                val t = requestToken(
-                    FormBody.Builder()
-                        .add("grant_type", "refresh_token")
-                        .add("refresh_token", refresh)
-                        .add("client_id", CLIENT_ID)
-                        .build(),
-                )
-                store(t.accessToken, t.expiresIn, t.refreshToken ?: refresh)
-                t.accessToken
-            } catch (e: Exception) {
-                // Fall back to a keymaster token through the librespot session.
-                com.rutger.fastify.diag.AppLog.w("Auth", "token refresh failed, falling back to keymaster", e)
-                val t = core().accessToken(SCOPES.joinToString(","))
-                accessToken = t.token
-                expiresAt = t.expiresAtMs.toLong()
-                t.token
-            }
-        }
-    }
-
     fun logout() {
         prefs.edit().clear().apply()
-        accessToken = null
-        expiresAt = 0
         runCatching { core().logout() }
         _loggedIn.value = false
     }
 
     private fun store(access: String, expiresIn: Long, refresh: String) {
-        accessToken = access
-        expiresAt = System.currentTimeMillis() + expiresIn * 1000
         prefs.edit()
             .putString(KEY_ACCESS, access)
-            .putLong(KEY_EXPIRES, expiresAt)
+            .putLong(KEY_EXPIRES, System.currentTimeMillis() + expiresIn * 1000)
             .putString(KEY_REFRESH, refresh)
             .apply()
     }
@@ -178,8 +141,6 @@ class AuthManager(
         @SerialName("refresh_token") val refreshToken: String? = null,
         val scope: String? = null,
     )
-
-    class NotLoggedInException : IllegalStateException("Not logged in")
 
     companion object {
         private const val TAG = "FastifyAuth"

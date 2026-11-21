@@ -11,10 +11,11 @@ desktop client id, the same way librespot does.
 ## Architecture
 
 - **Rust** (`rust/core`) owns the Spotify session, audio keys, CDN downloads, decryption and the
-  audio file cache (2 GB LRU). It exposes a tiny API through UniFFI: `login`, `connect`,
-  `open_track`, `prefetch`, `is_track_cached`, `access_token`.
+  audio file cache (2 GB LRU), plus library, search and Connect over the librespot session
+  (never the Web API, api.spotify.com: it 429s for this client id). It exposes its API through
+  UniFFI (`login`, `connect`, `open_track`, `prefetch`, `playlists`, ...).
   Its key store maps track → (file id, audio key), so cached tracks need no network at all.
-- **Kotlin** (`android/`) owns the UI (Compose), the Web API (library, search) and playback
+- **Kotlin** (`android/`) owns the UI (Compose) and playback
   (Media3 ExoPlayer + MediaSessionService). ExoPlayer plays the decrypted Ogg Vorbis stream
   (320 kbps) that Rust hands it through `SpotifyDataSource`.
 

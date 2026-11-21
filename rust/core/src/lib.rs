@@ -1,7 +1,7 @@
 //! Fastify core: a thin, cache-first layer over librespot exposed to Kotlin through UniFFI.
 //!
-//! Kotlin owns UI, metadata (Web API) and playback (Media3). Rust owns the Spotify session,
-//! audio keys, CDN downloads, decryption and the audio file cache.
+//! Kotlin owns UI and playback (Media3). Rust owns the Spotify session (library, search, Connect;
+//! never the Web API), audio keys, CDN downloads, decryption and the audio file cache.
 
 mod applog;
 mod catalog;
@@ -18,7 +18,7 @@ mod stream;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_core::authentication::Credentials;
@@ -177,30 +177,6 @@ impl FastifyCore {
             let _ = std::fs::remove_file(p);
         }
         Ok(())
-    }
-
-    /// Web API token through keymaster (fallback for the OAuth token Kotlin holds).
-    /// `scopes` is comma-separated.
-    pub async fn access_token(self: Arc<Self>, scopes: String) -> Result<AccessToken, CoreError> {
-        let this = self.clone();
-        self.rt
-            .spawn(async move {
-                let session = this.session().await?;
-                let token = session
-                    .token_provider()
-                    .get_token_with_client_id(&scopes, KEYMASTER_CLIENT_ID)
-                    .await
-                    .map_err(CoreError::from)?;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default();
-                Ok(AccessToken {
-                    token: token.access_token,
-                    expires_at_ms: (now + token.expires_in).as_millis() as u64,
-                })
-            })
-            .await
-            .map_err(CoreError::other)?
     }
 
     /// Username of the connected session (connects if needed).

@@ -4,7 +4,6 @@ import com.rutger.fastify.AppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import okhttp3.Request
 
 data class ProbeResult(val name: String, val ok: Boolean, val detail: String, val ms: Long)
 
@@ -67,18 +66,6 @@ class Diagnostics(private val c: AppContainer) {
             "${pinned.size} collections, ${c.core.downloadedTracks().size} tracks, ${c.core.downloadsSize() / 1_048_576u} MB, " +
                 "${c.downloads.active.value} in progress: " + pinned.joinToString { it.title }
         }
-        probe("Web API /me (OAuth token, expected 429)") { webApi("/me", c.auth.token()) }
         return results
-    }
-
-    private suspend fun webApi(path: String, token: String): String = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url("https://api.spotify.com/v1$path").header("Authorization", "Bearer $token").build()
-        c.http.newCall(req).execute().use { resp ->
-            val body = resp.body.string()
-            val retry = resp.header("Retry-After")?.let { " retry-after=${it}s" }.orEmpty()
-            val summary = "HTTP ${resp.code}$retry: ${body.take(200).replace("\n", " ")}"
-            if (!resp.isSuccessful) error(summary)
-            summary
-        }
     }
 }
