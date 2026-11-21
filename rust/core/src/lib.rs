@@ -379,9 +379,10 @@ impl FastifyCore {
             .map_err(CoreError::other)?
     }
 
-    /// Answer a request from connect_next_request (ok = handled).
-    pub fn connect_reply(&self, request_id: u64, ok: bool) {
-        self.connect.reply(request_id, ok);
+    /// Answer a request from connect_next_request (ok = handled). note: what the player did
+    /// ("handled: ...", "ignored: why", "failed: error"); the core logs it with the reply.
+    pub fn connect_reply(&self, request_id: u64, ok: bool, note: String) {
+        self.connect.reply(request_id, ok, &note);
     }
 
     /// The user's playlists (rootlist, folders flattened).

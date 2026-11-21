@@ -67,7 +67,7 @@ class ConnectTarget(
 
     private sealed interface Op {
         data class SetPlayer(val player: LocalPlayer) : Op
-        data class Reply(val id: ULong, val ok: Boolean) : Op
+        data class Reply(val id: ULong, val ok: Boolean, val note: String) : Op
         data object Activate : Op
         data object Deactivate : Op
     }
@@ -82,11 +82,11 @@ class ConnectTarget(
                 runCatching {
                     when (op) {
                         is Op.SetPlayer -> core().connectSetPlayer(op.player)
-                        is Op.Reply -> core().connectReply(op.id, op.ok)
+                        is Op.Reply -> core().connectReply(op.id, op.ok, op.note)
                         Op.Activate -> core().connectActivate()
                         Op.Deactivate -> core().connectDeactivate()
                     }
-                }.onFailure { AppLog.w(TAG, "core $op", it) }
+                }.onFailure { AppLog.w(TAG, "core ${op.javaClass.simpleName}", it, repeated = true) }
             }
         }
         publishNow()
@@ -100,7 +100,7 @@ class ConnectTarget(
                     }
                     .onFailure { e ->
                         if (e is CancellationException) throw e
-                        AppLog.w(TAG, "requests", e)
+                        AppLog.w(TAG, "requests", e, repeated = true)
                         delay(2_000L shl failures.coerceAtMost(4))
                         failures++
                     }
@@ -116,44 +116,67 @@ class ConnectTarget(
         Thread { runCatching { core().connectSetPlayer(null) } }.start()
     }
 
+    /**
+     * Runs a request; the core logs it with [note] and the reply (one line per request). Events
+     * (no reply) are logged here.
+     */
     private fun handle(req: IncomingRequest) {
-        val what = req.command.javaClass.simpleName
         val result = runCatching { execute(req.command) }
-        result.onFailure { AppLog.w(TAG, "$what from ${req.fromDeviceId} failed", it) }
-            .onSuccess { AppLog.i(TAG, "$what from ${req.fromDeviceId}") }
+        val note = result.fold(
+            { "handled: $it; now ${playerState()}" },
+            { "failed: ${it.javaClass.simpleName}: ${it.message}; now ${playerState()}" },
+        )
         publishNow()
-        if (!req.isEvent) ops.trySend(Op.Reply(req.id, result.isSuccess))
+        if (req.isEvent) {
+            val from = req.fromDeviceId.ifEmpty { "server" }
+            AppLog.i(TAG, "event #${req.id} ${req.command.javaClass.simpleName} from $from -> $note")
+        } else {
+            ops.trySend(Op.Reply(req.id, result.isSuccess, note))
+        }
     }
+
+    private fun playerState() = "${player.currentMediaItem?.mediaId ?: "-"} @${player.currentPosition / 1000}s, " +
+        "${if (player.playWhenReady) "playing" else "paused"}, ${player.mediaItemCount} items"
 
     private val IncomingRequest.isEvent get() = command is ConnectRequest.Volume ||
         command is ConnectRequest.Deactivated || command is ConnectRequest.Metadata
 
-    private fun execute(cmd: ConnectRequest) {
-        when (cmd) {
-            is ConnectRequest.Load -> load(cmd)
-            ConnectRequest.Pause, ConnectRequest.Deactivated -> player.pause()
-            ConnectRequest.Resume -> {
-                check(player.mediaItemCount > 0) { "nothing loaded" }
-                if (player.playbackState == Player.STATE_IDLE) player.prepare()
-                if (player.playbackState == Player.STATE_ENDED) player.seekTo(player.currentMediaItemIndex, 0)
-                player.play()
-            }
-            is ConnectRequest.SkipNext -> skipNext(cmd.track)
-            ConnectRequest.SkipPrev -> player.seekToPrevious()
-            is ConnectRequest.SeekTo -> player.seekTo(cmd.positionMs.toLong())
-            is ConnectRequest.SetOptions -> {
-                cmd.shuffle?.let { player.shuffleModeEnabled = it }
-                setRepeat(cmd.repeatContext, cmd.repeatTrack)
-            }
-            is ConnectRequest.AddToQueue -> addQueued(cmd.track.toTrack().toMediaItem(queued = true))
-            is ConnectRequest.SetQueue -> setQueue(cmd.next, cmd.added)
-            is ConnectRequest.Metadata -> fillStubs(cmd)
-            is ConnectRequest.Volume -> {
-                val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                val index = (cmd.volume.toFloat() / 65535 * max).roundToInt()
-                audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
-                remoteVolume = index to cmd.volume
-            }
+    /** Runs cmd on the player; returns what it did, for the log. */
+    private fun execute(cmd: ConnectRequest): String = when (cmd) {
+        is ConnectRequest.Load -> load(cmd)
+        ConnectRequest.Pause, ConnectRequest.Deactivated -> {
+            val was = player.playWhenReady
+            player.pause()
+            if (was) "paused" else "already paused"
+        }
+        ConnectRequest.Resume -> {
+            check(player.mediaItemCount > 0) { "nothing loaded" }
+            if (player.playbackState == Player.STATE_IDLE) player.prepare()
+            if (player.playbackState == Player.STATE_ENDED) player.seekTo(player.currentMediaItemIndex, 0)
+            val was = player.playWhenReady
+            player.play()
+            if (was) "already playing" else "resumed"
+        }
+        is ConnectRequest.SkipNext -> skipNext(cmd.track)
+        ConnectRequest.SkipPrev -> { player.seekToPrevious(); "skip prev" }
+        is ConnectRequest.SeekTo -> { player.seekTo(cmd.positionMs.toLong()); "seek to ${cmd.positionMs.toLong() / 1000}s" }
+        is ConnectRequest.SetOptions -> {
+            cmd.shuffle?.let { player.shuffleModeEnabled = it }
+            setRepeat(cmd.repeatContext, cmd.repeatTrack)
+            "options shuffle ${cmd.shuffle}, repeat context ${cmd.repeatContext}, track ${cmd.repeatTrack}"
+        }
+        is ConnectRequest.AddToQueue -> {
+            addQueued(cmd.track.toTrack().toMediaItem(queued = true))
+            "queued ${cmd.track.id}"
+        }
+        is ConnectRequest.SetQueue -> { setQueue(cmd.next, cmd.added); "queue set: ${cmd.next.size} next, ${cmd.added.size} added" }
+        is ConnectRequest.Metadata -> { fillStubs(cmd); "metadata for ${cmd.tracks.size} tracks, ${cmd.missing.size} missing" }
+        is ConnectRequest.Volume -> {
+            val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val index = (cmd.volume.toFloat() / 65535 * max).roundToInt()
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
+            remoteVolume = index to cmd.volume
+            "volume $index/$max"
         }
     }
 
@@ -223,7 +246,7 @@ class ConnectTarget(
             .forEach(player::removeMediaItem)
     }
 
-    private fun load(cmd: ConnectRequest.Load) {
+    private fun load(cmd: ConnectRequest.Load): String {
         val items = cmd.tracks.map { it.toTrack().toMediaItem() }
         check(items.isNotEmpty()) { "no tracks" }
         val shuffle = cmd.shuffle ?: player.shuffleModeEnabled
@@ -244,6 +267,8 @@ class ConnectTarget(
         setRepeat(cmd.repeatContext, cmd.repeatTrack)
         player.prepare()
         player.playWhenReady = !cmd.paused
+        return "loaded ${items.size} tracks (+${cmd.queued.size} queued) at $start @${cmd.positionMs.toLong() / 1000}s, " +
+            if (cmd.paused) "paused" else "play"
     }
 
     /** Spotify: repeat track = context + track flags. null keeps the current flag. */
@@ -258,7 +283,7 @@ class ConnectTarget(
         }
     }
 
-    private fun skipNext(track: RemoteTrack?) {
+    private fun skipNext(track: RemoteTrack?): String {
         if (track != null) {
             val order = playOrder()
             val upcoming = order.drop(order.indexOf(player.currentMediaItemIndex) + 1)
@@ -268,10 +293,11 @@ class ConnectTarget(
             if (target != null) {
                 player.seekTo(target, 0)
                 player.play()
-                return
+                return "skip to item $target"
             }
         }
         player.seekToNext()
+        return if (track != null) "skip next (${track.uri} not in the queue)" else "skip next"
     }
 
     private fun uid(index: Int) = player.getMediaItemAt(index).uid

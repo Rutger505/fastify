@@ -13,7 +13,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -217,7 +217,46 @@ impl Activity {
     }
 }
 
-type PendingReply = (mpsc::UnboundedSender<Reply>, bool);
+/// Dealer reply channel, whether success makes us the active device, and the request's log
+/// context (one INFO line per request, written when it's answered).
+struct PendingReply {
+    tx: mpsc::UnboundedSender<Reply>,
+    activates: bool,
+    log: RequestLog,
+}
+
+/// One incoming command, for the line that logs it with what we did and the reply.
+#[derive(Clone)]
+struct RequestLog {
+    endpoint: String,
+    /// Sender id + name if the cluster knows it.
+    from: String,
+    /// Our state when it arrived: active device or not, playing or not.
+    we: String,
+    started: Instant,
+}
+
+impl RequestLog {
+    /// handled: "handled: ...", "ignored: why" or "failed: error". Every request ends here.
+    fn done(&self, id: u64, handled: &str, reply: &Reply) {
+        log::info!(
+            "connect request #{id} {} from {} [we: {}] -> {handled}; reply {reply:?} after {} ms",
+            self.endpoint,
+            self.from,
+            self.we,
+            self.started.elapsed().as_millis(),
+        );
+    }
+}
+
+/// Last cluster as logged: the active device, its play state, the device list, the summary.
+#[derive(Default)]
+struct LastCluster {
+    active: String,
+    state: String,
+    devices: Vec<String>,
+    summary: String,
+}
 
 struct Shared {
     remote: watch::Sender<RemoteState>,
@@ -239,8 +278,10 @@ struct Shared {
     kick: Notify,
     /// Jam push revision + its reason (session_update), bumped per push.
     jam_version: watch::Sender<(u64, String)>,
-    /// Last logged [cluster_summary]: log only changes.
-    last_cluster: Mutex<String>,
+    /// Last logged cluster: INFO for active device / play state / device list changes only.
+    last_cluster: Mutex<LastCluster>,
+    /// Device id -> name, from every cluster (also devices that left since), for the log.
+    names: Mutex<HashMap<String, String>>,
     /// Device name -> epoch ms it last (re)connected (NEW_DEVICE_APPEARED/DEVICE_NEW_CONNECTION).
     connected_at: Mutex<HashMap<String, u64>>,
     /// The last cluster named us the active device.
@@ -248,20 +289,57 @@ struct Shared {
 }
 
 impl Shared {
-    fn push(self: &Arc<Self>, from: String, command: ConnectRequest, reply: Option<PendingReply>) {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Hands a request to the player (Kotlin). With reply: the player answers via
+    /// [Hub::reply], else the sender gets a failure after REPLY_TIMEOUT. id from [next_id].
+    fn push(self: &Arc<Self>, id: u64, from: String, command: ConnectRequest, reply: Option<PendingReply>) {
         if let Some(r) = reply {
             self.pending.lock().unwrap().insert(id, r);
             let sh = self.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(REPLY_TIMEOUT).await;
-                if let Some((tx, _)) = sh.pending.lock().unwrap().remove(&id) {
-                    log::warn!("connect request {id}: no answer from the player");
-                    let _ = tx.send(Reply::Failure);
+                let pending = sh.pending.lock().unwrap().remove(&id);
+                if let Some(p) = pending {
+                    let reply = Reply::Failure;
+                    let why = format!("failed: no answer from the player in {} s", REPLY_TIMEOUT.as_secs());
+                    p.log.done(id, &why, &reply);
+                    let _ = p.tx.send(reply);
                 }
             });
         }
-        let _ = self.requests_tx.send(IncomingRequest { id, from_device_id: from, command });
+        if self.requests_tx.send(IncomingRequest { id, from_device_id: from, command }).is_err() {
+            log::warn!("connect request #{id}: player queue closed, dropped");
+        }
+    }
+
+    /// "id (name)" of a device, name from the latest clusters.
+    fn device(&self, id: &str) -> String {
+        if id.is_empty() {
+            return "none".into();
+        }
+        match self.names.lock().unwrap().get(id) {
+            Some(name) => format!("{id} ({name})"),
+            None => id.to_owned(),
+        }
+    }
+
+    /// Our Connect state for the log: activity, whether the cluster names us, local player.
+    fn we(&self) -> String {
+        let activity = match *self.activity.lock().unwrap() {
+            Activity::Inactive => "inactive",
+            Activity::Pending { .. } => "activating",
+            Activity::Confirmed { .. } => "active",
+        };
+        let cluster = if self.cluster_active_me.load(Ordering::Relaxed) { "cluster: me" } else { "cluster: other" };
+        let player = match self.local.borrow().as_ref() {
+            None => "no player",
+            Some(l) if l.is_playing => "playing",
+            Some(_) => "paused",
+        };
+        format!("{activity}, {cluster}, {player}")
     }
 
     fn activate(&self) {
@@ -277,7 +355,7 @@ impl Shared {
                 Activity::Inactive => *a = Activity::Pending { since_ms: now_ms() },
             }
         }
-        log::info!("connect: becoming the active device");
+        log::info!("connect: becoming the active device ({})", self.we());
         self.kick.notify_one();
     }
 
@@ -293,15 +371,41 @@ impl Shared {
         self.kick.notify_one();
     }
 
-    /// Logs the cluster when the active device, its play state or the device list changed
-    /// (pause debugging: who claimed playback, and whether it played). [why]: push reason or put.
+    /// Logs cluster changes in one line: active device (old -> new), another active device's
+    /// play state or the device list at INFO (who claimed playback, and whether it played);
+    /// anything else (track, origin, our own play state: Playback logs it) at DEBUG. [why]: push
+    /// reason or put.
     fn note_cluster(&self, c: &Cluster, me: &str, why: &str) {
-        let summary = cluster_summary(c, me);
-        let mut last = self.last_cluster.lock().unwrap();
-        if *last != summary {
-            log::info!("cluster ({why}): {summary}");
-            *last = summary;
+        {
+            let mut names = self.names.lock().unwrap();
+            for (id, d) in &c.device {
+                names.insert(id.clone(), if id == me { "me".into() } else { d.name.clone() });
+            }
         }
+        let summary = cluster_summary(c, me);
+        let state = c.player_state.as_ref().map_or("no state", |p| match (p.is_playing, p.is_paused) {
+            (true, false) => "playing",
+            (true, true) => "paused",
+            _ => "stopped",
+        });
+        let mut devices: Vec<String> = c.device.keys().cloned().collect();
+        devices.sort();
+        let mut last = self.last_cluster.lock().unwrap();
+        if last.summary == summary {
+            return;
+        }
+        if last.active != c.active_device_id {
+            log::info!(
+                "active device: {} -> {} ({why}); {summary}",
+                self.device(&last.active),
+                self.device(&c.active_device_id),
+            );
+        } else if last.devices != devices || (last.state != state && c.active_device_id != me) {
+            log::info!("cluster ({why}): {summary}");
+        } else {
+            log::debug!("cluster ({why}): {summary}");
+        }
+        *last = LastCluster { active: c.active_device_id.clone(), state: state.into(), devices, summary };
     }
 
     /// The server confirmed us as active device and nobody took over since.
@@ -351,7 +455,7 @@ impl Shared {
                 *a = Activity::Inactive;
                 drop(a);
                 log::info!("connect: {other} ({name}) took playback over (playing {playing})");
-                self.push(other.clone(), ConnectRequest::Deactivated, None);
+                self.push(self.next_id(), other.clone(), ConnectRequest::Deactivated, None);
                 self.kick.notify_one();
             }
             _ => {}
@@ -382,7 +486,8 @@ impl Hub {
                 put_active: AtomicBool::new(false),
                 kick: Notify::new(),
                 jam_version: watch::channel((0, String::new())).0,
-                last_cluster: Mutex::new(String::new()),
+                last_cluster: Mutex::new(LastCluster::default()),
+                names: Mutex::new(HashMap::new()),
                 connected_at: Mutex::new(HashMap::new()),
                 cluster_active_me: AtomicBool::new(false),
             }),
@@ -462,13 +567,20 @@ impl Hub {
         tokio::time::timeout(timeout, rx.recv()).await.ok().flatten()
     }
 
-    /// Answer request id. A successful play/transfer makes this the active device.
-    pub fn reply(&self, id: u64, ok: bool) {
-        let Some((tx, activates)) = self.sh.pending.lock().unwrap().remove(&id) else {
+    /// Answer request id. A successful play/transfer makes this the active device. note: what
+    /// the player did ("handled: ...", "ignored: why", "failed: error"), for the request's line.
+    pub fn reply(&self, id: u64, ok: bool, note: &str) {
+        let pending = self.sh.pending.lock().unwrap().remove(&id);
+        let Some(p) = pending else {
+            log::warn!("connect request #{id}: answered too late ({note}), the sender already got a failure");
             return;
         };
-        let _ = tx.send(if ok { Reply::Success } else { Reply::Failure });
-        if ok && activates {
+        let reply = if ok { Reply::Success } else { Reply::Failure };
+        p.log.done(id, note, &reply);
+        if p.tx.send(reply).is_err() {
+            log::warn!("connect request #{id}: reply not sent, dealer request gone");
+        }
+        if ok && p.activates {
             self.sh.activate();
         }
     }
@@ -559,6 +671,7 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
         tokio::select! {
             id = connection_ids.next() => match id {
                 Some(Ok(id)) => {
+                    log::debug!("dealer connected (new connection id)");
                     session.set_connection_id(&id);
                     reg_tx.send_modify(|g| *g += 1);
                 }
@@ -590,7 +703,13 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
                 Some(Err(e)) => log::warn!("cluster update: {e}"),
                 None => return Err(CoreError::Network { msg: "dealer closed".into() }),
             },
-            Some(rr) = commands.next() => { let _ = work_tx.send(rr); },
+            rr = commands.next() => match rr {
+                Some(rr) => if let Err(e) = work_tx.send(rr) {
+                    // Dropping the reply channel answers the sender with a failure.
+                    log::warn!("connect command {} dropped: command worker stopped", e.0.0.command);
+                },
+                None => return Err(CoreError::Network { msg: "dealer command handler closed".into() }),
+            },
             update = jam_updates.next() => match update {
                 Some(Ok(v)) => {
                     let reason = crate::jam::push_reason(&v);
@@ -601,17 +720,21 @@ async fn run(session: &Session, sh: &Arc<Shared>) -> Result<(), CoreError> {
                 None => return Err(CoreError::Network { msg: "dealer closed".into() }),
             },
             vol = volumes.next() => match vol {
-                Some(Ok(v)) if sh.local.borrow().is_some() => {
+                Some(Ok(v)) => {
                     let volume = v.volume.clamp(0, 65535) as u32;
-                    log::info!("connect: volume {volume}");
-                    sh.local.send_if_modified(|l| match l {
-                        Some(l) if l.volume != volume => { l.volume = volume; true }
-                        _ => false,
-                    });
-                    sh.push(String::new(), ConnectRequest::Volume { volume }, None);
+                    if sh.local.borrow().is_some() {
+                        log::info!("connect volume {volume}/65535 [we: {}] -> to the player", sh.we());
+                        sh.local.send_if_modified(|l| match l {
+                            Some(l) if l.volume != volume => { l.volume = volume; true }
+                            _ => false,
+                        });
+                        sh.push(sh.next_id(), String::new(), ConnectRequest::Volume { volume }, None);
+                    } else {
+                        log::info!("connect volume {volume}/65535 -> ignored: no local player (observer only)");
+                    }
                 }
                 Some(Err(e)) => log::warn!("volume: {e}"),
-                _ => {}
+                None => return Err(CoreError::Network { msg: "dealer closed".into() }),
             },
             _ = check.tick() => if session.is_invalid() {
                 return Err(CoreError::Network { msg: "session closed".into() });
@@ -824,26 +947,31 @@ async fn handle_command(
 ) {
     *sh.last_command.lock().unwrap() = (req.message_id, req.sent_by_device_id.clone());
     let from = req.sent_by_device_id.clone();
-    log::info!("connect command {} from {from}", req.command);
+    let id = sh.next_id();
+    let mut endpoint = req.command.to_string().trim_start_matches("endpoint: ").to_owned();
+    endpoint.truncate(200);
+    let log = RequestLog { endpoint, from: sh.device(&from), we: sh.we(), started: Instant::now() };
+    log::debug!("connect request #{id} {} from {} [we: {}]", log.endpoint, log.from, log.we);
+    let answer = |handled: &str, r: Reply| {
+        log.done(id, handled, &r);
+        if reply.send(r).is_err() {
+            log::warn!("connect request #{id}: reply not sent, dealer request gone");
+        }
+    };
     if sh.local.borrow().is_none() {
-        log::warn!("connect command without a local player");
-        let _ = reply.send(Reply::Failure);
+        answer("ignored: no local player (playback service not running, observer only)", Reply::Failure);
         return;
     }
     match to_request(session, sh, req.command).await {
         Ok(Some((cmd, activates, stubs))) => {
-            sh.push(from.clone(), cmd, Some((reply, activates)));
+            let log = log.clone();
+            sh.push(id, from.clone(), cmd, Some(PendingReply { tx: reply, activates, log }));
             if !stubs.is_empty() {
                 tokio::spawn(fill_stubs(session.clone(), sh.clone(), from, stubs));
             }
         }
-        Ok(None) => {
-            let _ = reply.send(Reply::Success);
-        }
-        Err(e) => {
-            log::warn!("connect command failed: {e}");
-            let _ = reply.send(Reply::Failure);
-        }
+        Ok(None) => answer("ignored: nothing for the player to do", Reply::Success),
+        Err(e) => answer(&format!("failed: {e}"), Reply::Failure),
     }
 }
 
@@ -855,7 +983,7 @@ async fn fill_stubs(session: Session, sh: Arc<Shared>, from: String, ids: Vec<St
                 let found: std::collections::HashSet<&str> =
                     tracks.iter().map(|t| t.id.as_str()).collect();
                 let missing = chunk.iter().filter(|id| !found.contains(id.as_str())).cloned().collect();
-                sh.push(from.clone(), ConnectRequest::Metadata { tracks, missing }, None);
+                sh.push(sh.next_id(), from.clone(), ConnectRequest::Metadata { tracks, missing }, None);
             }
             Err(e) => log::warn!("connect: metadata for {} queued tracks: {e}", chunk.len()),
         }
