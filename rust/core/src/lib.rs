@@ -12,6 +12,7 @@ mod keystore;
 mod jam;
 mod library;
 mod pathfinder;
+mod reconnect;
 mod shazam;
 mod stream;
 
@@ -84,6 +85,7 @@ pub struct FastifyCore {
     /// Downloaded tracks: encrypted audio files outside the LRU cache, never evicted.
     downloads: PathBuf,
     connect: connect::Hub,
+    reconnect: reconnect::Reconnect,
 }
 
 #[uniffi::export]
@@ -124,6 +126,7 @@ impl FastifyCore {
             device_id,
             downloads,
             connect: connect::Hub::new(),
+            reconnect: reconnect::Reconnect::new(),
         }))
     }
 
@@ -160,7 +163,7 @@ impl FastifyCore {
     /// so the key index is wiped too).
     pub fn logout(&self) -> Result<(), CoreError> {
         if let Some(s) = self.session.blocking_lock().take() {
-            s.shutdown();
+            self.rt.spawn(retire(s));
         }
         self.keys.clear()?;
         // Downloads can't be decrypted without the keys.
@@ -247,15 +250,16 @@ impl FastifyCore {
     /// `after_version` or after ~25 s. Read the Jam again when the version changed.
     pub async fn jam_watch(self: Arc<Self>, after_version: u64) -> Result<JamEvent, CoreError> {
         let this = self.clone();
-        self.rt
-            .spawn(async move {
-                let session = this.session().await?;
-                this.connect.ensure(&session);
-                let (version, reason) = this.connect.wait_jam(after_version, Duration::from_secs(25)).await;
-                Ok(JamEvent { version, reason })
-            })
-            .await
-            .map_err(CoreError::other)?
+        self.spawn_abortable(async move {
+            let session = this.session_waiting().await?;
+            this.connect.ensure(&session);
+            let (version, reason) = this
+                .connect
+                .wait_jam(after_version, Duration::from_secs(25))
+                .await;
+            Ok(JamEvent { version, reason })
+        })
+        .await
     }
 
     /// Host a Jam on this Connect device (Premium only).
@@ -295,16 +299,20 @@ impl FastifyCore {
     /// Spotify Connect: the account's devices and what the active one plays. Starts the observer
     /// (and reconnects the session) when needed, then returns once the state's version is past
     /// `after_version`, or after ~25 s with the unchanged state. Call in a loop while visible.
-    pub async fn connect_watch(self: Arc<Self>, after_version: u64) -> Result<RemoteState, CoreError> {
+    pub async fn connect_watch(
+        self: Arc<Self>,
+        after_version: u64,
+    ) -> Result<RemoteState, CoreError> {
         let this = self.clone();
-        self.rt
-            .spawn(async move {
-                let session = this.session().await?;
-                this.connect.ensure(&session);
-                Ok(this.connect.wait(after_version, Duration::from_secs(25)).await)
-            })
-            .await
-            .map_err(CoreError::other)?
+        self.spawn_abortable(async move {
+            let session = this.session_waiting().await?;
+            this.connect.ensure(&session);
+            Ok(this
+                .connect
+                .wait(after_version, Duration::from_secs(25))
+                .await)
+        })
+        .await
     }
 
     /// Send a player command to Connect device `device_id`.
@@ -367,16 +375,22 @@ impl FastifyCore {
 
     /// Next command from another device for the local player; None after ~25 s. Keeps the
     /// Connect registration alive (reconnects the session when needed): call in a loop.
-    pub async fn connect_next_request(self: Arc<Self>) -> Result<Option<IncomingRequest>, CoreError> {
+    pub async fn connect_next_request(
+        self: Arc<Self>,
+    ) -> Result<Option<IncomingRequest>, CoreError> {
         let this = self.clone();
-        self.rt
-            .spawn(async move {
-                let session = this.session().await?;
-                this.connect.ensure(&session);
-                Ok(this.connect.next_request(Duration::from_secs(25)).await)
-            })
-            .await
-            .map_err(CoreError::other)?
+        self.spawn_abortable(async move {
+            let session = this.session_waiting().await?;
+            this.connect.ensure(&session);
+            Ok(this.connect.next_request(Duration::from_secs(25)).await)
+        })
+        .await
+    }
+
+    /// Default network from ConnectivityManager: available, and validated (has internet). The
+    /// session reconnect waits for a validated network and retries right away when it returns.
+    pub fn set_network(&self, available: bool, validated: bool) {
+        self.reconnect.set_network(available, validated);
     }
 
     /// Answer a request from connect_next_request (ok = handled). note: what the player did
@@ -799,22 +813,88 @@ impl FastifyCore {
         TrackStream::new(AudioFile::Cached(file), entry.key(), true).map(Some)
     }
 
-    /// Live session, connecting with stored credentials if needed. The lock is held while
-    /// connecting so concurrent callers share one connection attempt.
+    /// Live session, connecting with stored credentials if needed (on demand: user actions,
+    /// playback, library). The lock is held while connecting so there is one attempt in flight;
+    /// callers that waited for a failed one get its error instead of each trying again. Fails
+    /// fast without a network.
     async fn session(&self) -> Result<Session, CoreError> {
+        let seen = self.reconnect.failure_gen();
         let mut guard = self.session.lock().await;
-        if let Some(s) = guard.as_ref() {
-            if !s.is_invalid() {
-                return Ok(s.clone());
-            }
+        if let Some(s) = live(&mut guard).await {
+            return Ok(s);
+        }
+        if self.reconnect.failure_gen() != seen {
+            return Err(CoreError::Network {
+                msg: self.reconnect.last_error(),
+            });
+        }
+        if self.reconnect.offline() {
+            return Err(CoreError::Network {
+                msg: "offline: no network".into(),
+            });
         }
         let creds = self.cache.credentials().ok_or(CoreError::NotLoggedIn)?;
-        self.connect_locked(&mut guard, creds).await
+        self.attempt(&mut guard, creds).await
+    }
+
+    /// Live session for background watchers: never errors because of the network, waits for
+    /// the reconnect coordinator (validated network, backoff) and shares the attempt in flight.
+    async fn session_waiting(&self) -> Result<Session, CoreError> {
+        loop {
+            {
+                let mut guard = self.session.lock().await;
+                if let Some(s) = live(&mut guard).await {
+                    return Ok(s);
+                }
+                if self.reconnect.gate() == reconnect::Gate::Attempt {
+                    let creds = self.cache.credentials().ok_or(CoreError::NotLoggedIn)?;
+                    match self.attempt(&mut guard, creds).await {
+                        Ok(s) => return Ok(s),
+                        Err(CoreError::Auth { msg }) => return Err(CoreError::Auth { msg }),
+                        Err(_) => {}
+                    }
+                }
+            }
+            self.reconnect.changed().await;
+        }
     }
 
     async fn connect_with(&self, creds: Credentials) -> Result<Session, CoreError> {
         let mut guard = self.session.lock().await;
-        self.connect_locked(&mut guard, creds).await
+        self.attempt(&mut guard, creds).await
+    }
+
+    async fn attempt(
+        &self,
+        slot: &mut Option<Session>,
+        creds: Credentials,
+    ) -> Result<Session, CoreError> {
+        match self.connect_locked(slot, creds).await {
+            Ok(s) => {
+                self.reconnect.succeeded();
+                Ok(s)
+            }
+            Err(e) => {
+                self.reconnect.failed(&e.to_string());
+                Err(e)
+            }
+        }
+    }
+
+    /// Runs `f` on the core runtime; dropping the returned future (Kotlin cancelled the call)
+    /// aborts it, so long waits don't pile up.
+    async fn spawn_abortable<T: Send + 'static>(
+        &self,
+        f: impl std::future::Future<Output = Result<T, CoreError>> + Send + 'static,
+    ) -> Result<T, CoreError> {
+        struct Abort<T>(tokio::task::JoinHandle<T>);
+        impl<T> Drop for Abort<T> {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let mut task = Abort(self.rt.spawn(f));
+        (&mut task.0).await.map_err(CoreError::other)?
     }
 
     async fn connect_locked(
@@ -833,7 +913,7 @@ impl FastifyCore {
             .await
             .map_err(CoreError::from)?;
         if let Some(old) = slot.replace(session.clone()) {
-            old.shutdown();
+            retire(old).await;
         }
         Ok(session)
     }
@@ -877,6 +957,25 @@ impl FastifyCore {
             msg: format!("no playable Ogg Vorbis file for {track_id}"),
         })
     }
+}
+
+/// The slot's session if still valid; an invalid one is retired (and its dealer closed).
+async fn live(slot: &mut Option<Session>) -> Option<Session> {
+    match slot.as_ref() {
+        Some(s) if !s.is_invalid() => Some(s.clone()),
+        Some(_) => {
+            retire(slot.take()?).await;
+            None
+        }
+        None => None,
+    }
+}
+
+/// Ends a replaced/lost session for good. shutdown() leaves its dealer running, which kept
+/// reconnecting every 10 s forever: one more loop per session ever created.
+async fn retire(session: Session) {
+    session.shutdown();
+    session.dealer().close().await;
 }
 
 // FileId is needed by keystore.

@@ -2,6 +2,7 @@ package com.rutger.fastify
 
 import android.app.Application
 import com.rutger.fastify.diag.AppLog
+import com.rutger.fastify.diag.NetworkLog
 import com.rutger.fastify.auth.AuthManager
 import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.data.Downloads
@@ -81,6 +82,10 @@ class AppContainer(val app: Application) {
     /** Connect the Spotify session in the background while the UI draws from cache. */
     fun warmUp() {
         scope.launch(Dispatchers.IO) {
+            // The core's reconnect coordinator waits for a validated network.
+            launch {
+                NetworkLog.state.collect { n -> n?.let { core.setNetwork(it.available, it.validated) } }
+            }
             if (!auth.isLoggedIn) return@launch
             downloads.start()
             runCatching { core.connect() }

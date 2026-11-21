@@ -6,14 +6,22 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Network up/down for the app log, one line per change: the default network's transport and
  * whether it has internet, and whether Android blocks it for the app (Doze, data saver), which
  * looks like "offline" to the core (DNS lookups fail). While down, [AppLog] holds back repeated
- * errors.
+ * errors. [state] feeds the core's reconnect coordinator (FastifyCore.setNetwork), unsettled.
  */
 object NetworkLog {
+    /** Default network usable by the app (available, not blocked) and validated; null = unknown. */
+    data class State(val available: Boolean, val validated: Boolean)
+
+    private val _state = MutableStateFlow<State?>(null)
+    val state: StateFlow<State?> = _state
+
     private var last: String? = null
     private var caps: NetworkCapabilities? = null
     private var blocked = false
@@ -40,6 +48,8 @@ object NetworkLog {
     @Synchronized
     private fun update(change: () -> Unit) {
         change()
+        val usable = available && !blocked
+        _state.value = State(usable, usable && caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true)
         main.removeCallbacks(reportLater)
         main.postDelayed(reportLater, SETTLE_MS)
     }
