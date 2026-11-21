@@ -338,10 +338,16 @@ impl FastifyCore {
         self.connect.activate();
     }
 
-    /// Connect device `name` (re)connected at most `within_ms` ago and we're still the active
-    /// device (audio focus guard: the phone's own Spotify app woke up in the background).
-    pub fn connect_woke_while_active(&self, name: String, within_ms: u64) -> bool {
-        self.connect.woke_while_active(&name, within_ms)
+    /// Connect name of the phone's own Spotify app (= the phone model): the only device whose
+    /// silent active-device grab is claimed back, and the one [connect_woke_while_active] checks.
+    pub fn connect_set_phone_app(&self, name: String) {
+        self.connect.set_phone_app(&name);
+    }
+
+    /// The phone's own Spotify app (re)connected at most `within_ms` ago and we're still the
+    /// active device (audio focus guard: Android woke it up in the background).
+    pub fn connect_woke_while_active(&self, within_ms: u64) -> bool {
+        self.connect.woke_while_active(within_ms)
     }
 
     /// Nothing loaded any more: stop being the active device.

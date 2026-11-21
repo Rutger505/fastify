@@ -286,6 +286,8 @@ struct Shared {
     connected_at: Mutex<HashMap<String, u64>>,
     /// The last cluster named us the active device.
     cluster_active_me: AtomicBool,
+    /// Connect name of the phone's own Spotify app (= phone model), "" = unknown. See [claims_back].
+    phone_app: Mutex<String>,
 }
 
 impl Shared {
@@ -439,22 +441,27 @@ impl Shared {
                 let state = c.player_state.as_ref();
                 let playing = state.is_some_and(|p| p.is_playing && !p.is_paused);
                 let we_play = self.local.borrow().as_ref().is_some_and(|l| l.is_playing);
-                // Only a device that actually plays takes over. Spotify's own app claims the
-                // active device without playing when Android wakes it (Bluetooth/car connect):
-                // keep playing and claim it back, else every connect pauses the phone.
-                if !playing && we_play {
+                let phone_app = self.phone_app.lock().unwrap().clone();
+                let state_str = state.map_or("none".into(), |p| format!("playing {} paused {}", p.is_playing, p.is_paused));
+                if claims_back(name, playing, we_play, &phone_app) {
                     *a = Activity::Pending { since_ms: now_ms() };
                     drop(a);
                     log::info!(
-                        "connect: {other} ({name}) claimed active without playing (state: {}), claiming back",
-                        state.map_or("none".into(), |p| format!("playing {} paused {}", p.is_playing, p.is_paused)),
+                        "connect: {other} ({name}) = Spotify app on this phone, claimed active without playing (state: {state_str}) while we play: woken by Android, claiming back",
                     );
                     self.kick.notify_one();
                     return;
                 }
                 *a = Activity::Inactive;
                 drop(a);
-                log::info!("connect: {other} ({name}) took playback over (playing {playing})");
+                if playing || !we_play {
+                    log::info!("connect: {other} ({name}) took playback over (playing {playing})");
+                } else {
+                    log::info!(
+                        "connect: {other} ({name}) took playback over without playing (state: {state_str}): paused transfer, not the Spotify app on this phone ({})",
+                        if phone_app.is_empty() { "unknown" } else { phone_app.as_str() },
+                    );
+                }
                 self.push(self.next_id(), other.clone(), ConnectRequest::Deactivated, None);
                 self.kick.notify_one();
             }
@@ -490,6 +497,7 @@ impl Hub {
                 names: Mutex::new(HashMap::new()),
                 connected_at: Mutex::new(HashMap::new()),
                 cluster_active_me: AtomicBool::new(false),
+                phone_app: Mutex::new(String::new()),
             }),
             task: Mutex::new(None),
         }
@@ -548,10 +556,19 @@ impl Hub {
         self.sh.activate();
     }
 
-    /// Device `name` (re)connected to Connect at most `within_ms` ago while we're still the
-    /// active device: e.g. Android starting the phone's own Spotify app in the background.
-    pub fn woke_while_active(&self, name: &str, within_ms: u64) -> bool {
-        let at = self.sh.connected_at.lock().unwrap().get(name).copied();
+    /// Connect name of the phone's own Spotify app (the phone model), see [claims_back].
+    pub fn set_phone_app(&self, name: &str) {
+        *self.sh.phone_app.lock().unwrap() = name.to_owned();
+    }
+
+    /// The phone's own Spotify app ([set_phone_app]) (re)connected to Connect at most `within_ms`
+    /// ago while we're still the active device: Android started it in the background.
+    pub fn woke_while_active(&self, within_ms: u64) -> bool {
+        let name = self.sh.phone_app.lock().unwrap().clone();
+        if name.is_empty() {
+            return false;
+        }
+        let at = self.sh.connected_at.lock().unwrap().get(&name).copied();
         at.is_some_and(|t| now_ms().saturating_sub(t) <= within_ms)
             && self.sh.cluster_active_me.load(Ordering::Relaxed)
             && *self.sh.activity.lock().unwrap() != Activity::Inactive
@@ -1265,6 +1282,14 @@ fn remote_track(t: &ProvidedTrack) -> RemoteTrack {
 }
 
 /// One line: active device + its play state and origin, then all devices.
+/// Another device became active without playing while we play: claim it back only when it's the
+/// phone's own Spotify app (Connect name = phone model). Android wakes that app on Bluetooth/car
+/// connect and it grabs the active device silently, which would pause the phone on every connect.
+/// Any other device (e.g. a paused transfer from the PC) takes over like a playing one.
+fn claims_back(name: &str, other_playing: bool, we_play: bool, phone_app: &str) -> bool {
+    !other_playing && we_play && !phone_app.is_empty() && name == phone_app
+}
+
 fn cluster_summary(c: &Cluster, me: &str) -> String {
     let name = |id: &str| {
         if id == me {
@@ -1465,4 +1490,78 @@ pub async fn transfer(session: &Session, from: &str, to: &str) -> Result<(), Cor
     log::info!("connect {path}");
     session.spclient().request(&Method::POST, &path, Some(json_headers()), Some(&body)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ME: &str = "me-id";
+
+    fn hub_playing(phone_app: &str) -> Hub {
+        let hub = Hub::new();
+        hub.set_phone_app(phone_app);
+        hub.sh.local.send_replace(Some(LocalPlayer {
+            name: "Fastify (Pixel 9)".into(),
+            track: None,
+            is_playing: true,
+            is_buffering: false,
+            position_ms: 0,
+            position_at_ms: 0,
+            duration_ms: 0,
+            shuffle: false,
+            repeat_context: false,
+            repeat_track: false,
+            context_uri: None,
+            prev_tracks: vec![],
+            next_tracks: vec![],
+            volume: 0,
+        }));
+        *hub.sh.activity.lock().unwrap() = Activity::Confirmed { since_ms: 0 };
+        hub
+    }
+
+    /// Cluster where device "other-id" named `name` is active and paused.
+    fn other_active_paused(name: &str) -> Cluster {
+        let mut c = Cluster::new();
+        c.active_device_id = "other-id".into();
+        let mut d = DeviceInfo::new();
+        d.name = name.into();
+        c.device.insert("other-id".into(), d);
+        let mut p = PlayerState::new();
+        p.is_playing = true;
+        p.is_paused = true;
+        c.player_state = MessageField::some(p);
+        c
+    }
+
+    fn deactivated(hub: &Hub) -> bool {
+        let mut rx = hub.sh.requests_rx.try_lock().unwrap();
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|r| matches!(r.command, ConnectRequest::Deactivated))
+    }
+
+    #[test]
+    fn claims_back_only_the_phones_own_spotify_app() {
+        assert!(claims_back("Pixel 9", false, true, "Pixel 9"));
+        assert!(!claims_back("spotatui", false, true, "Pixel 9"));
+        assert!(!claims_back("Pixel 9", true, true, "Pixel 9"));
+        assert!(!claims_back("Pixel 9", false, false, "Pixel 9"));
+        assert!(!claims_back("Pixel 9", false, true, ""));
+    }
+
+    #[test]
+    fn phone_app_grabbing_active_silently_is_claimed_back() {
+        let hub = hub_playing("Pixel 9");
+        hub.sh.on_cluster(&other_active_paused("Pixel 9"), ME);
+        assert!(matches!(*hub.sh.activity.lock().unwrap(), Activity::Pending { .. }));
+        assert!(!deactivated(&hub));
+    }
+
+    #[test]
+    fn paused_transfer_from_another_device_takes_over() {
+        let hub = hub_playing("Pixel 9");
+        hub.sh.on_cluster(&other_active_paused("spotatui"), ME);
+        assert_eq!(*hub.sh.activity.lock().unwrap(), Activity::Inactive);
+        assert!(deactivated(&hub));
+    }
 }

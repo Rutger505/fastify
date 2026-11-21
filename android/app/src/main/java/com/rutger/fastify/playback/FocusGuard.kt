@@ -77,7 +77,7 @@ class FocusGuard(
     private fun arm() {
         armed = true
         main.removeCallbacks(check)
-        val woke = runCatching { core().connectWokeWhileActive(Build.MODEL, WOKE_WINDOW_MS.toULong()) }
+        val woke = runCatching { core().connectWokeWhileActive(WOKE_WINDOW_MS.toULong()) }
             .onFailure { AppLog.w(TAG, "focus guard: Connect check failed: $it") }
             .getOrDefault(false)
         if (woke) {

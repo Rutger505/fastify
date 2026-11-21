@@ -40,6 +40,8 @@ class AppContainer(val app: Application) {
         // Core lines (Connect, session) into the log file too, before the core's first line.
         com.rutger.fastify.core.setLogSink(com.rutger.fastify.diag.AppLog.CoreSink)
         FastifyCore(app.filesDir.absolutePath, app.cacheDir.absolutePath, AUDIO_CACHE_BYTES.toULong())
+            // The phone's own Spotify app shows up in Connect under the phone model.
+            .also { it.connectSetPhoneApp(android.os.Build.MODEL) }
     }
 
     val http: OkHttpClient by lazy {

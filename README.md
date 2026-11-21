@@ -56,8 +56,11 @@ can move playback anywhere, both ways.
 - Active device: playing locally (or a successful play/transfer) makes the phone active (the
   other device stops). The server has to confirm it (cluster names us); after that (or 5 s
   pending) another active device in a cluster means it took over -> `Deactivated` -> phone
-  pauses. Giving up uses `put_connect_state_inactive` like spirc. While active, cluster changes
-  by other devices re-PUT our state (spirc's position-drift workaround).
+  pauses, also when it doesn't play (paused transfer). Only exception: the phone's own Spotify app
+  (Connect name = `Build.MODEL`, set once via `connect_set_phone_app`) grabbing active without
+  playing while we play is claimed back (Android wakes it on Bluetooth/car connect). Giving up
+  uses `put_connect_state_inactive` like spirc. While active, cluster changes by other devices
+  re-PUT our state (spirc's position-drift workaround).
 - Dealer: FASTIFY PATCH in vendor `dealer/mod.rs` retries a failed url/token fetch; upstream
   ends the dealer for good (Connect silently dead while the session lives).
 - Transfers: `connect_transfer(from, to)`; from this phone the core PUTs the state as active
