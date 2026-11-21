@@ -130,9 +130,12 @@ class LibraryRepository(
         ShazamResult(m.title, m.artist, m.coverUrl, ranked.distinctBy { normalized(it.title) to normalized(it.artists) }.take(5))
     }
 
-    /** Playlists the user can add to: their own (owner unknown = assume editable). */
+    /**
+     * Playlists the user can add to: their own. Rootlist entries without an owner are ones
+     * Spotify withholds metadata for (e.g. followed, then made private: 403), so not editable.
+     */
     fun editablePlaylists(username: String?): List<Collection> =
-        cachedHome()?.playlists.orEmpty().filter { username == null || it.owner == null || it.owner == username }
+        cachedHome()?.playlists.orEmpty().filter { username == null || it.owner == username }
 
     /** Adds the track unless it's already in the playlist (checked server-side). Returns whether it was added. */
     suspend fun addToPlaylist(playlist: Collection, track: Track): Boolean = withContext(Dispatchers.IO) {

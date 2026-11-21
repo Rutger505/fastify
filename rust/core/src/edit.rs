@@ -210,8 +210,17 @@ pub async fn playlist_remove_all(
     Ok(removed)
 }
 
+/// Playlists Spotify refused to read for membership checks (this process).
+fn no_access() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
 /// Which of `playlist_ids` contain the track (fresh from the server, fetched in parallel).
-/// Playlists that fail to load are left out and logged.
+/// Playlists that fail to load are left out and logged; ones Spotify refuses (403/404: e.g. a
+/// followed playlist its owner made private, still in the rootlist without metadata) are logged
+/// once and not fetched again.
 pub async fn playlists_containing(
     session: &Session,
     playlist_ids: &[String],
@@ -220,6 +229,9 @@ pub async fn playlists_containing(
     let uri = format!("spotify:track:{track_id}");
     let mut set = tokio::task::JoinSet::new();
     for id in playlist_ids {
+        if no_access().lock().unwrap().contains(id) {
+            continue;
+        }
         let (session, id, uri) = (session.clone(), id.clone(), uri.clone());
         set.spawn(async move {
             let r = fetch_list(&session, &id).await;
@@ -231,6 +243,11 @@ pub async fn playlists_containing(
         match joined.map_err(CoreError::other)? {
             (id, Ok(true)) => out.push(id),
             (_, Ok(false)) => {}
+            (id, Err(e @ (CoreError::Auth { .. } | CoreError::NotFound { .. }))) => {
+                if no_access().lock().unwrap().insert(id.clone()) {
+                    log::info!("membership: skipping {id} from now on, no access: {e}");
+                }
+            }
             (id, Err(e)) => log::warn!("membership of {id}: {e}"),
         }
     }
