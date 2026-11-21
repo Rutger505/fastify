@@ -5,6 +5,7 @@ import android.util.Log
 import com.rutger.fastify.core.LogSink
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -24,12 +25,13 @@ import java.util.concurrent.TimeUnit
  *   written, further ones are counted and summed up as "xN more since <time>" when the window
  *   ends (or on [flush]). While the network is down they're only counted ([network]).
  * - Files: one per day (new one at [MAX_FILE_BYTES]), app-<start time>.log; kept max
- *   [MAX_AGE_MS] and [MAX_TOTAL_BYTES] in total, oldest deleted first.
+ *   [MAX_AGE_MS] and [MAX_TOTAL_BYTES] in total, oldest deleted first. Small files, so deleting
+ *   the oldest only loses a small chunk; bigger ones (old layout, earlier limits) keep their tail.
  */
 object AppLog {
-    private const val MAX_TOTAL_BYTES = 1024 * 1024L
-    private const val MAX_FILE_BYTES = 256 * 1024L
-    private const val MAX_AGE_MS = 7 * 24 * 3600_000L
+    private const val MAX_TOTAL_BYTES = 300 * 1024L
+    private const val MAX_FILE_BYTES = 64 * 1024L
+    private const val MAX_AGE_MS = 5 * 24 * 3600_000L
     private const val REPEAT_WINDOW_MS = 10 * 60_000L
     private val writer = Executors.newSingleThreadScheduledExecutor { Thread(it, "fastify-log").apply { isDaemon = true } }
     private val time = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS")
@@ -251,15 +253,46 @@ object AppLog {
         out = runCatching { FileOutputStream(f, true) }.getOrNull()
     }
 
-    /** Older than [MAX_AGE_MS], then oldest first until the rest fits next to a full current file. */
+    /**
+     * Older than [MAX_AGE_MS], then oversized files (imported old layout, earlier limits) cut to
+     * their last [MAX_FILE_BYTES], then oldest first until the rest fits next to a full current
+     * file, so all files stay within [MAX_TOTAL_BYTES].
+     */
     private fun prune() {
         val old = files.filter { it != file }.toMutableList()
         val cutoff = System.currentTimeMillis() - MAX_AGE_MS
         old.removeAll { f -> (f.lastModified() < cutoff).also { if (it) f.delete() } }
+        old.filter { it.length() > MAX_FILE_BYTES }.forEach(::keepTail)
         var total = old.sumOf { it.length() }
         while (old.isNotEmpty() && total > MAX_TOTAL_BYTES - MAX_FILE_BYTES) {
             val f = old.removeAt(0)
             total -= f.length()
+            f.delete()
+        }
+    }
+
+    /** Keeps the last [MAX_FILE_BYTES] of [f] from a line start; mtime stays (age pruning). */
+    private fun keepTail(f: File) {
+        val modified = f.lastModified()
+        val tmp = File(f.parentFile, "${f.name}.tmp")
+        val ok = runCatching {
+            RandomAccessFile(f, "r").use { src ->
+                src.seek(src.length() - MAX_FILE_BYTES)
+                src.readLine()
+                FileOutputStream(tmp).use { dst ->
+                    val buf = ByteArray(8192)
+                    while (true) {
+                        val n = src.read(buf)
+                        if (n < 0) break
+                        dst.write(buf, 0, n)
+                    }
+                }
+            }
+            tmp.renameTo(f) && f.setLastModified(modified)
+        }.getOrDefault(false)
+        if (!ok) {
+            tmp.delete()
+            // Can't trim: drop it rather than break the total.
             f.delete()
         }
     }

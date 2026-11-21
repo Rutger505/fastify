@@ -131,7 +131,7 @@ rootlist unless saved). Persisted-query hashes are hardcoded and re-scraped from
 - Loops (watchers, retries): `AppLog.w(..., repeated = true)`. First one in full, then `(xN more since <time>)` every 10 min; while the network is down only counted, summed up in the "network up" line. librespot warnings get this automatically.
 - Stack traces: once per kind per process, later ones one line.
 - No silent drops: every code path that ignores a Connect request or event logs why.
-- Files: `filesDir/logs/app-<start>.log`, new one per day or at 256 KB; kept max 7 days and 1 MB in total, oldest deleted first.
+- Files: `filesDir/logs/app-<start>.log`, new one per day or at 64 KB; kept max 5 days and 300 KB in total, oldest deleted first (small files: that only loses a small chunk). Bigger files (old layout, earlier limits) are cut to their last 64 KB.
 
 ## Build
 
