@@ -135,6 +135,14 @@ impl WebsocketMessage {
 
         let payload = self.payloads.pop().ok_or(ProtocolError::Empty)?;
         let bytes = match payload {
+            // FASTIFY PATCH: some pushes (hm://collection/.../json) carry plain JSON text, not
+            // base64. '{' and '[' aren't in the base64 alphabet, so this can't misread base64.
+            MessagePayloadValue::String(string)
+                if string.trim_start().starts_with(['{', '['])
+                    && serde_json::from_str::<JsonValue>(&string).is_ok() =>
+            {
+                return Ok(PayloadValue::Json(string));
+            }
             MessagePayloadValue::String(string) => BASE64_STANDARD
                 .decode(string)
                 .map_err(ProtocolError::Base64)?,
