@@ -19,13 +19,11 @@ class JamAwarePlayer(
     /** Package of the controller calling now, for the log (who paused?). */
     private val caller: () -> String,
 ) : ForwardingPlayer(player) {
-    override fun play() { AppLog.i(TAG, "play by ${caller()}"); super.play() }
-    override fun pause() { AppLog.i(TAG, "pause by ${caller()}"); super.pause() }
+    // The PLAY/PAUSE line (PlaybackLog) names the controller.
+    override fun play() = PlaySource.with(caller()) { super.play() }
+    override fun pause() = PlaySource.with(caller()) { super.pause() }
     override fun stop() { AppLog.i(TAG, "stop by ${caller()}"); super.stop() }
-    override fun setPlayWhenReady(playWhenReady: Boolean) {
-        AppLog.i(TAG, "${if (playWhenReady) "play" else "pause"} by ${caller()}")
-        super.setPlayWhenReady(playWhenReady)
-    }
+    override fun setPlayWhenReady(playWhenReady: Boolean) = PlaySource.with(caller()) { super.setPlayWhenReady(playWhenReady) }
 
 
     override fun seekToNext() { if (!redirect("skip next", RemoteCommand.SkipNext)) super.seekToNext() }

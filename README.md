@@ -129,7 +129,7 @@ rootlist unless saved). Persisted-query hashes are hardcoded and re-scraped from
 
 `diag/AppLog.kt` (Kotlin) and `applog.rs` (core, forwarded into the same file). Share logs (Home → bug icon → Diagnostics) sends every retained file, oldest first, plus logcat.
 
-- INFO, always one line: every external event. Connect requests (`connect request #N <endpoint> from <device> [we: ...] -> handled/ignored/failed; reply ...`), active device changes (old -> new), transfers, play/pause/skip/seek with their source (UI, notification, media button, Connect device, autoplay, focus guard), session/dealer/Jam connection changes, network up/down, downloads start/done, errors.
+- INFO, always one line: every external event. Connect requests (`connect request #N <endpoint> from <device> [we: ...] -> handled/ignored/failed; reply ...`), active device changes (old -> new), transfers, play/pause/skip/seek with their source (UI, notification, media button, Connect device, autoplay, focus guard; `PlaySource.with` around the player call, ExoPlayer calls every one a user request), session/dealer/Jam connection changes, network up/down, downloads start/done, errors.
 - DEBUG (`AppLog.d`, `log::debug!`; logcat only): periodic and repeated stuff, per-attempt lines (AP connects, retries), library fetch timings, buffering under 1 s, audio-focus ducks under 10 s, cluster changes that only touch the track or our own play state.
 - Loops (watchers, retries): `AppLog.w(..., repeated = true)`. First one in full, then `(xN more since <time>)` every 10 min; while the network is down only counted, summed up in the "network up" line. librespot warnings get this automatically.
 - Stack traces: once per kind per process, later ones one line.

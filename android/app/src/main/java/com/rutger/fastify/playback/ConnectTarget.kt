@@ -121,7 +121,9 @@ class ConnectTarget(
      * (no reply) are logged here.
      */
     private fun handle(req: IncomingRequest) {
-        val result = runCatching { execute(req.command) }
+        val source = if (req.command is ConnectRequest.Deactivated) "Connect: another device took over (event #${req.id})"
+            else "Connect request #${req.id}"
+        val result = runCatching { PlaySource.with(source) { execute(req.command) } }
         val note = result.fold(
             { "handled: $it; now ${playerState()}" },
             { "failed: ${it.javaClass.simpleName}: ${it.message}; now ${playerState()}" },

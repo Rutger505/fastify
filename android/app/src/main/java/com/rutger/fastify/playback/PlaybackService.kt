@@ -127,7 +127,11 @@ class PlaybackService : MediaSessionService() {
     private fun caller(): String {
         val s = session ?: return "?"
         val c = s.controllerForCurrentRequest ?: return "app (no controller)"
-        return if (s.isMediaNotificationController(c)) "notification" else c.packageName
+        return when {
+            s.isMediaNotificationController(c) -> "notification"
+            c.packageName == packageName -> "app UI"
+            else -> c.packageName
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -277,7 +281,7 @@ class PlaybackService : MediaSessionService() {
                 player.addMediaItems(tracks.map { it.toMediaItem(autoplay = true) })
                 if (ended) {
                     player.seekTo(count, 0)
-                    player.play()
+                    PlaySource.with("autoplay") { player.play() }
                 }
             } catch (e: CancellationException) {
                 throw e

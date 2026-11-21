@@ -12,6 +12,27 @@ import androidx.media3.common.Player
 import com.rutger.fastify.diag.AppLog
 
 /**
+ * Who is changing the player right now, for the PLAY/PAUSE line: ExoPlayer reports every play()
+ * and pause() as a user request, whether it came from the UI, a Connect device or the focus
+ * guard. Callers wrap their call in [with]; ExoPlayer notifies listeners synchronously on the main
+ * thread, so the line reads [current] while the call runs. Main thread only.
+ */
+object PlaySource {
+    var current: String? = null
+        private set
+
+    fun <T> with(source: String, block: () -> T): T {
+        val prev = current
+        current = source
+        try {
+            return block()
+        } finally {
+            current = prev
+        }
+    }
+}
+
+/**
  * Why playback starts and stops, in the app log (Share logs): every play/pause with its reason
  * (user via which controller, audio focus, noisy output, Connect), buffering, track changes,
  * audio focus holders (other apps' players), output devices (Bluetooth) and phone calls.
@@ -31,8 +52,10 @@ class PlaybackLog(context: Context, private val player: Player) {
     }
     private var suppressedAt = 0L
     private var bufferingAt = 0L
+    private var lastPlayWhenReady = false
 
     fun start() {
+        lastPlayWhenReady = player.playWhenReady
         player.addListener(listener)
         audio.registerAudioPlaybackCallback(playbackCallback, main)
         audio.registerAudioDeviceCallback(deviceCallback, main)
@@ -57,8 +80,20 @@ class PlaybackLog(context: Context, private val player: Player) {
 
     private val listener = object : Player.Listener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            val was = lastPlayWhenReady
+            lastPlayWhenReady = playWhenReady
+            // ExoPlayer also reports reason-only changes: it keeps audio focus while paused, so
+            // another app taking focus then is a "focus loss" that pauses nothing.
+            if (playWhenReady == was) {
+                if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) {
+                    AppLog.i(TAG, "audio focus lost while paused (another app took audio focus, nothing to pause); ${state()}")
+                } else {
+                    AppLog.d(TAG, "playWhenReady stays $playWhenReady, reason now $reason (${PlaySource.current ?: "-"})")
+                }
+                return
+            }
             val why = when (reason) {
-                Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST -> "user/app/Connect"
+                Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST -> PlaySource.current ?: "user request (source unknown)"
                 Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS -> "AUDIO FOCUS LOST (other app took audio)"
                 Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY -> "BECOMING NOISY (headphones/Bluetooth disconnected)"
                 Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE -> "remote"

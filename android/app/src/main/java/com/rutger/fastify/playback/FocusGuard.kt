@@ -20,8 +20,10 @@ import com.rutger.fastify.diag.AppLog
  * takeover by that app would have made it the active device (Android fades Fastify out for ~2 s
  * before the loss arrives, so the cluster update is in by then).
  * Max [MAX_RESUMES] auto-resumes per [RESUME_PERIOD_MS] so a focus fight can't loop.
- * Only when Fastify was actually playing when focus went: not idle/ended, and not already
- * silenced by an earlier transient loss that hit a paused or idle player.
+ * Only when Fastify was actually playing when focus went: not idle/ended, not already paused
+ * (ExoPlayer keeps focus while paused and reports a later loss as a pause with reason focus loss,
+ * e.g. right after a Connect takeover paused us), and not already silenced by an earlier transient
+ * loss that hit a paused or idle player.
  */
 class FocusGuard(
     context: Context,
@@ -33,9 +35,12 @@ class FocusGuard(
     private var armed = false
     /** A transient focus loss (ducked/suppressed) hit while playing; null = no transient loss. */
     private var transientHitPlaying: Boolean? = null
+    /** playWhenReady before the current event: ExoPlayer also reports reason-only changes. */
+    private var lastPlayWhenReady = false
     private val resumes = ArrayDeque<Long>()
 
     fun start() {
+        lastPlayWhenReady = player.playWhenReady
         player.addListener(listener)
         audio.registerAudioPlaybackCallback(playbackCallback, main)
     }
@@ -48,8 +53,16 @@ class FocusGuard(
 
     private val listener = object : Player.Listener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            val was = lastPlayWhenReady
+            lastPlayWhenReady = playWhenReady
             if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) {
-                // playWhenReady was true; the rest of the state is still as it was before the loss.
+                // Already paused (user, Connect takeover): the loss paused nothing, keep it that way.
+                if (!was) {
+                    transientHitPlaying = null
+                    AppLog.d(TAG, "focus guard: not armed, already paused before focus was lost")
+                    return
+                }
+                // The rest of the state is still as it was before the loss.
                 val state = player.playbackState
                 val playing = (state == Player.STATE_READY || state == Player.STATE_BUFFERING) &&
                     (player.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS || transientHitPlaying == true)
@@ -119,7 +132,7 @@ class FocusGuard(
         }
         resumes.addLast(now)
         AppLog.w(TAG, "AUTO-RESUME: focus was taken but no app plays audio")
-        player.play()
+        PlaySource.with("focus guard (auto-resume)") { player.play() }
     }
 
     private companion object {
