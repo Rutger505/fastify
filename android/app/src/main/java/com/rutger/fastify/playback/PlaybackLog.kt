@@ -171,7 +171,7 @@ class PlaybackLog(context: Context, private val player: Player) {
         AppLog.i(TAG, "audio mode: $name")
     }
 
-    private companion object {
+    companion object {
         const val TAG = "Playback"
         /** Shorter buffering / suppression (notification sounds ducking us): logcat only. */
         const val LONG_MS = 1_000L
