@@ -5,6 +5,7 @@ import android.content.Intent
 import com.rutger.fastify.core.FastifyCore
 import com.rutger.fastify.diag.AppLog
 import com.rutger.fastify.playback.DownloadService
+import com.rutger.fastify.playback.DownloadWorker
 import java.io.File
 import java.util.Collections
 import kotlinx.coroutines.CoroutineScope
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -35,13 +37,17 @@ data class DownloadProgress(val done: Int, val total: Int, val failed: Int) {
  * Offline downloads, Spotify style: pin a playlist/album/Liked Songs and every track in it is
  * downloaded outside the LRU audio cache (Rust keeps them in files/downloads, never evicted).
  * Pinned collections stay in sync: new tracks are downloaded, removed ones deleted.
- * Work runs in the app scope; [DownloadService] keeps the process alive while it runs.
+ * Work runs in the app scope. While it runs, [DownloadService] (dataSync foreground service) keeps
+ * the process alive, but Android 15+ only lets that start while the app is visible: from the
+ * background (process started by boot or a worker) [DownloadWorker] holds the process instead, and
+ * the service takes over once the app is opened.
  */
 class Downloads(
     private val context: Context,
     private val scope: CoroutineScope,
     private val core: () -> FastifyCore,
     private val library: LibraryRepository,
+    private val foreground: StateFlow<Boolean>,
 ) {
     private val file = File(context.filesDir, "downloads.json")
     private val json = Json { ignoreUnknownKeys = true }
@@ -72,10 +78,25 @@ class Downloads(
             }
         }.stateIn(scope, SharingStarted.Eagerly, emptyMap())
 
+    init {
+        // Opened while downloads run in the background (worker): move them to the service.
+        scope.launch {
+            foreground.collect { if (it && _active.value > 0) startService() }
+        }
+    }
+
+    /** Suspends until no download is queued or running. */
+    suspend fun awaitIdle() {
+        syncJob?.join()
+        _active.first { it == 0 }
+    }
+
     fun isPinned(c: Collection) = _collections.value.any { it.cacheKey == c.cacheKey }
 
-    /** Load state and resume unfinished downloads. Call once at startup, off the main thread. */
+    /** Load state and resume unfinished downloads. Only the first call does anything. */
+    @Synchronized
     fun start() {
+        if (syncJob != null) return
         syncJob = scope.launch(Dispatchers.IO) {
             _trackIds.value = runCatching { core().downloadedTracks().toSet() }
                 .onFailure { AppLog.w("Downloads", "listing downloads failed", it) }
@@ -131,8 +152,9 @@ class Downloads(
         if (_active.getAndUpdate { it + 1 } == 0) {
             batch.set(Batch(System.currentTimeMillis()))
             AppLog.i("Downloads", "downloads started")
+            // The service/worker stays until the queue is idle again.
+            startService()
         }
-        startService()
         scope.launch(Dispatchers.IO) {
             try {
                 gate.withPermit {
@@ -174,10 +196,18 @@ class Downloads(
     }
     private val batch = java.util.concurrent.atomic.AtomicReference(Batch(0))
 
+    /** Keep the process alive while downloading: foreground service when allowed, else a worker. */
     private fun startService() {
+        if (!foreground.value) {
+            DownloadWorker.enqueue(context)
+            return
+        }
         // Foreground service so a long download survives the app going to the background.
         runCatching { context.startForegroundService(Intent(context, DownloadService::class.java)) }
-            .onFailure { AppLog.w("Downloads", "download service not started: ${it.message}", repeated = true) }
+            .onFailure {
+                AppLog.w("Downloads", "download service not started: ${it.message}", repeated = true)
+                DownloadWorker.enqueue(context)
+            }
     }
 
     private fun load(): List<Collection> = runCatching {

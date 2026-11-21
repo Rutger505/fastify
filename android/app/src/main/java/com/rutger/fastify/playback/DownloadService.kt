@@ -1,5 +1,6 @@
 package com.rutger.fastify.playback
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import com.rutger.fastify.container
+import com.rutger.fastify.diag.AppLog
 import com.rutger.fastify.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +32,15 @@ class DownloadService : Service() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "Downloads", NotificationManager.IMPORTANCE_LOW),
         )
-        startForeground(ID, notification(0, 0), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        try {
+            startForeground(ID, notification(0, 0), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } catch (e: ForegroundServiceStartNotAllowedException) {
+            // Started while the app went to the background: the worker keeps downloads alive instead.
+            AppLog.w("Downloads", "download service not allowed: ${e.message}; using worker", repeated = true)
+            DownloadWorker.enqueue(this)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         lastStartId = startId
         if (!started) {
             started = true

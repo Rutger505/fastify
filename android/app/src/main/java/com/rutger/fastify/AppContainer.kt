@@ -62,7 +62,7 @@ class AppContainer(val app: Application) {
     val contextTitles by lazy { ContextTitles(app.getSharedPreferences("context_titles", android.content.Context.MODE_PRIVATE)) }
     val player: PlayerConnection by lazy { PlayerConnection(app, remote, shuffle, contextTitles) { jam } }
     val jam: JamController by lazy { JamController(scope, { core }, { http }) }
-    val downloads by lazy { Downloads(app, scope, { core }, library) }
+    val downloads by lazy { Downloads(app, scope, { core }, library, foreground) }
 
     /** MainActivity is started (visible). */
     val foreground = MutableStateFlow(false)
