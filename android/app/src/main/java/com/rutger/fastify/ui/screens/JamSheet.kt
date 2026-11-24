@@ -143,11 +143,12 @@ private fun InvitePreview(invite: String, state: com.rutger.fastify.playback.Jam
     }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
     preview?.members?.forEach { MemberRow(it) }
     Spacer(Modifier.height(12.dp))
+    // Both choices equally prominent: neither is the "default" way to join.
+    Button(onClick = { jam.join(invite, listenHere = false) }, enabled = !state.busy && preview != null, modifier = Modifier.fillMaxWidth()) {
+        Text("Play on the host's speaker")
+    }
     Button(onClick = { jam.join(invite, listenHere = true) }, enabled = !state.busy && preview != null, modifier = Modifier.fillMaxWidth()) {
         Text("Listen on this phone")
-    }
-    OutlinedButton(onClick = { jam.join(invite, listenHere = false) }, enabled = !state.busy && preview != null, modifier = Modifier.fillMaxWidth()) {
-        Text("Play on the host's speaker")
     }
     TextButton(onClick = jam::closeSheet, modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
 }

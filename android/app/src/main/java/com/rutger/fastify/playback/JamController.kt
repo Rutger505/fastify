@@ -54,6 +54,8 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
 
     private val generation = AtomicLong()
     private var watcher: Job? = null
+    /** Jam Spotify told us is over; sessions/current can keep answering it for a while after. */
+    @Volatile private var endedId: String? = null
 
     /** Session to redirect player commands to: guest playing the Jam on this phone. */
     val guestSessionId: String?
@@ -70,14 +72,22 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
             refresh()
             var version = 0uL
             var failures = 0
+            var idlePolls = 0
             while (isActive) {
                 runCatching { core().jamWatch(version) }
                     .onSuccess { e ->
                         failures = 0
                         if (e.version != version) {
                             version = e.version
+                            idlePolls = 0
                             AppLog.i(TAG, "push ${e.reason}")
                             notice(e.reason)?.let { _notices.tryEmit(it) }
+                            if (e.reason in ENDED) ended(e.reason)
+                            refresh()
+                        } else if (_state.value.jam != null && ++idlePolls >= RECHECK_POLLS) {
+                            // A push missed during a dealer reconnect would leave a dead Jam showing forever.
+                            idlePolls = 0
+                            AppLog.d(TAG, "no push for a while, re-reading the Jam")
                             refresh()
                         }
                     }
@@ -97,9 +107,18 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
         else -> null
     }
 
+    /** Drop the Jam right away on an end push instead of trusting the next sessions/current. */
+    private fun ended(reason: String) {
+        val was = _state.value.jam ?: return
+        endedId = was.sessionId
+        generation.incrementAndGet() // a request in flight may still answer with the old Jam
+        AppLog.i(TAG, "left Jam ${was.sessionId} (push $reason)")
+        _state.value = JamUiState(loaded = true)
+    }
+
     fun refresh() = run("refresh", quiet = true) { core().jamGet() }
 
-    fun start() = run("start Jam") { core().jamStart() }
+    fun start() = run("start Jam") { core().jamStart().also { endedId = null } }
 
     /** Show [invite] (link, spotify:socialsession:, token) with who's in it, before joining. */
     fun openInvite(invite: String) {
@@ -125,7 +144,7 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
     fun showError(message: String) { _state.value = _state.value.copy(error = message) }
 
     fun join(invite: String, listenHere: Boolean) = run("join Jam") {
-        core().jamJoin(resolveInvite(invite), listenHere)
+        core().jamJoin(resolveInvite(invite), listenHere).also { endedId = null } // rejoining after a kick is allowed
     }
 
     fun leave() {
@@ -196,7 +215,9 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
         scope.launch(Dispatchers.IO) {
             val result = runCatching { action() }
             if (request != generation.get()) return@launch
-            result.onSuccess { jam ->
+            result.onSuccess { reported ->
+                val jam = reported?.takeUnless { it.sessionId == endedId }
+                if (reported != null && jam == null) AppLog.d(TAG, "$label: ignoring ended Jam ${reported.sessionId} still reported by Spotify")
                 val was = _state.value.jam
                 if (was?.sessionId != jam?.sessionId) {
                     AppLog.i(TAG, if (jam == null) "left Jam ${was?.sessionId} ($label)" else
@@ -217,6 +238,9 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
 
     private companion object {
         const val TAG = "Jam"
+        val ENDED = setOf("SESSION_DELETED", "YOU_WERE_KICKED")
+        /** Idle watch polls (~25 s each) before re-reading a Jam we're in. */
+        const val RECHECK_POLLS = 2
         val TOKEN = Regex("""socialsession(?:/|:|%2F|%3A)([A-Za-z0-9_-]{8,64})""", RegexOption.IGNORE_CASE)
     }
 }

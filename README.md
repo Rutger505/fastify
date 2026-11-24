@@ -105,7 +105,9 @@ them), UI in `JamSheet` (player bottom bar, Group icon), state in `JamController
   must go to the Jam (`jam_command`, `PlayerConnection` + `JamAwarePlayer` for notification and
   Bluetooth), else the phone drifts out of sync. Pause stays local.
 - Pushes: `hm://social-connect/v2/session_update` {reason, session} on the Connect dealer bump a
-  revision (`jam_watch`); the app re-reads the session.
+  revision (`jam_watch`); the app re-reads the session. SESSION_DELETED/YOU_WERE_KICKED drop the
+  Jam at once and that session id is ignored afterwards (sessions/current can lag); while in a Jam
+  the app re-reads it every ~50 s without pushes (missed during a dealer reconnect).
 - Invites: open.spotify.com/socialsession links open Fastify (unverified domain: enable under App
   info > Open by default), any Jam link can be shared to Fastify, or pasted in the sheet.
 - Probe: `fastify-probe <dir> jam get|start|preview|join|leave|watch`. Testing with Rutger's
