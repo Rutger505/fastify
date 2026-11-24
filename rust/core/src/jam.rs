@@ -94,6 +94,17 @@ pub fn parse_join_token(input: &str) -> Result<String, CoreError> {
     Ok(token.to_owned())
 }
 
+/// Path for logs: no query (device id), join/info tokens masked.
+fn redact(path: &str) -> String {
+    let path = path.split('?').next().unwrap_or(path);
+    for marker in ["/sessions/join/", "/sessions/info/"] {
+        if let Some((head, _)) = path.split_once(marker) {
+            return format!("{head}{marker}<token>");
+        }
+    }
+    path.to_owned()
+}
+
 fn json_body(body: &[u8]) -> Result<Value, CoreError> {
     if body.is_empty() {
         return Ok(Value::Null);
@@ -125,9 +136,9 @@ async fn request(
         (None, _) => Some(b"{}".to_vec()),
     };
     if method == Method::GET {
-        log::debug!("jam {method} {}", path.split('?').next().unwrap_or(path));
+        log::debug!("jam {method} {}", redact(path));
     } else {
-        log::info!("jam {method} {}", path.split('?').next().unwrap_or(path));
+        log::info!("jam {method} {}", redact(path));
     }
     match tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -139,7 +150,7 @@ async fn request(
         Ok(Ok(bytes)) => Ok(Some(json_body(&bytes)?)),
         Ok(Err(e)) if e.kind == ErrorKind::NotFound && method == Method::GET => Ok(None),
         Ok(Err(e)) => {
-            log::warn!("jam {method} {path}: {e}");
+            log::warn!("jam {method} {}: {e}", redact(path));
             Err(CoreError::from(e))
         }
     }
@@ -331,7 +342,16 @@ pub async fn join(session: &Session, invite: &str, listen_here: bool) -> Result<
             "join_attempt_id": uuid::Uuid::new_v4().to_string(),
             "permission_mode": "FULL",
         });
-        match request(session, Method::POST, "/social-connect/v3/sessions/join", Some(body)).await {
+        let mut r = request(session, Method::POST, "/social-connect/v3/sessions/join", Some(body)).await;
+        if matches!(r, Err(CoreError::NotFound { .. })) {
+            // v3 404'd on a Jam whose info/<token> answered (2026-11-24); other clients join via v2.
+            log::info!("jam join as {mode}: v3 404, trying v2 join/<token>");
+            let path = format!(
+                "/social-connect/v2/sessions/join/{token}?playback_control={mode}&join_type=deeplinking&local_device_id={device}"
+            );
+            r = request(session, Method::POST, &path, None).await;
+        }
+        match r {
             Ok(v) => {
                 let mut jam = v.as_ref().and_then(parse).or(current(session).await?)
                     .ok_or_else(|| CoreError::other("Spotify returned no Jam after joining"))?;
@@ -433,6 +453,13 @@ mod tests {
         assert!(parse_join_token("../bad").is_err());
         assert!(parse_join_token("https://evil.example/socialsession/abc").is_err());
         assert!(parse_join_token("https://spotify.link/x").is_err());
+    }
+
+    #[test]
+    fn redacts_tokens() {
+        assert_eq!(redact("/social-connect/v2/sessions/join/AbC?local_device_id=d"), "/social-connect/v2/sessions/join/<token>");
+        assert_eq!(redact("/social-connect/v2/sessions/info/AbC"), "/social-connect/v2/sessions/info/<token>");
+        assert_eq!(redact("/social-connect/v3/sessions/join"), "/social-connect/v3/sessions/join");
     }
 
     /// Trimmed from a live GET sessions/current (other project's capture, 2026-10), ids invented.

@@ -109,10 +109,13 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
         scope.launch(Dispatchers.IO) {
             val r = runCatching { core().jamPreview(resolveInvite(invite)) }
             if (request != generation.get()) return@launch
-            r.onSuccess { _state.value = _state.value.copy(preview = it) }
+            r.onSuccess {
+                AppLog.i(TAG, "invite preview (${inviteKind(invite)}): ${it.members.size} members")
+                _state.value = _state.value.copy(preview = it)
+            }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    AppLog.w(TAG, "invite preview failed", e)
+                    AppLog.w(TAG, "invite preview failed (${inviteKind(invite)})", e)
                     _state.value = _state.value.copy(error = describe(e))
                 }
         }
@@ -157,6 +160,14 @@ class JamController(private val scope: CoroutineScope, private val core: () -> F
             }
         }
         return true
+    }
+
+    /** Invite form for logs, never the token. */
+    private fun inviteKind(invite: String): String = when {
+        Regex("""spotify(\.app)?\.link/""").containsMatchIn(invite) -> "short link"
+        "open.spotify.com" in invite -> "open.spotify.com link"
+        "spotify:socialsession:" in invite -> "spotify: uri"
+        else -> "other text"
     }
 
     /** spotify.link short links redirect (sometimes in script) to open.spotify.com/socialsession/<token>. */
